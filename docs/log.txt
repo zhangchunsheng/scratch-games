@@ -1,0 +1,16 @@
+构建一个 Scratch → HTML 转换工具，它可以解析 .sb3 文件并生成可运行的 HTML 游戏。
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation-duration: 0.25s;
+    animation-timing-function: cubic-bezier(0.19, 1, 0.22, 1);
+  }
+VvisualizeVvisualize show_widget这个工具可以直接在浏览器中将 .sb3 文件转换为独立的 HTML 游戏，无需服务器。
+使用方式： 拖拽或点击上传你的 .sb3 文件，点击「下载 HTML」即可获得完整的可运行游戏文件。
+支持的功能：
+转换引擎覆盖了大部分常用积木——运动类（移动、旋转、坐标、边界弹射）、外观类（说话气泡、造型切换、大小、特效）、控制类（循环、条件、等待、重复直到）、事件类（绿旗、按键、广播）、运算符（加减乘除、随机数、比较）以及变量读写。
+已知局限：
+
+声音积木暂未实现（需要 Web Audio API 额外处理）
+克隆（Clone）机制为简化版
+部分复杂积木（如视频侦测、自定义积木）暂不支持

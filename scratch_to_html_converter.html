@@ -1,0 +1,535 @@
+
+<h2 class="sr-only">Scratch 转 HTML 工具 — 上传 .sb3 文件生成可运行的 HTML 游戏</h2>
+
+<div style="padding: 1.5rem 0;">
+
+<div id="drop-zone" style="border: 1.5px dashed var(--color-border-secondary); border-radius: var(--border-radius-lg); padding: 2.5rem; text-align: center; cursor: pointer; transition: background 0.2s; margin-bottom: 1.5rem;">
+  <div style="font-size: 32px; margin-bottom: 0.5rem;">📦</div>
+  <p style="font-size: 15px; font-weight: 500; color: var(--color-text-primary); margin: 0 0 4px;">拖拽 .sb3 文件到此处</p>
+  <p style="font-size: 13px; color: var(--color-text-secondary); margin: 0 0 1rem;">或点击选择文件</p>
+  <input type="file" id="file-input" accept=".sb3" style="display:none;">
+  <button onclick="document.getElementById('file-input').click()" style="font-size: 13px; padding: 6px 16px;">选择文件</button>
+</div>
+
+<div id="status-area" style="display:none; margin-bottom: 1.5rem;">
+  <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 1rem 1.25rem;">
+    <p id="status-text" style="margin: 0; font-size: 14px; color: var(--color-text-secondary);"></p>
+    <div id="progress-bar-wrap" style="margin-top: 10px; height: 4px; background: var(--color-border-tertiary); border-radius: 2px; display:none;">
+      <div id="progress-bar" style="height: 4px; background: #378ADD; border-radius: 2px; width: 0%; transition: width 0.3s;"></div>
+    </div>
+  </div>
+</div>
+
+<div id="result-area" style="display:none;">
+  <div style="display: flex; gap: 10px; margin-bottom: 1rem; flex-wrap: wrap;">
+    <button id="download-btn" style="font-size: 13px; padding: 6px 16px;">下载 HTML 文件</button>
+    <button id="preview-btn" style="font-size: 13px; padding: 6px 16px;">预览游戏</button>
+    <button id="copy-btn" style="font-size: 13px; padding: 6px 16px;">复制代码</button>
+  </div>
+  <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 1rem 1.25rem; max-height: 200px; overflow-y: auto;">
+    <pre id="code-preview" style="margin: 0; font-size: 11px; font-family: var(--font-mono); color: var(--color-text-secondary); white-space: pre-wrap; word-break: break-all;"></pre>
+  </div>
+</div>
+
+<div id="info-section" style="margin-top: 1.5rem; border-top: 0.5px solid var(--color-border-tertiary); padding-top: 1.5rem;">
+  <p style="font-size: 13px; color: var(--color-text-secondary); margin: 0 0 0.75rem; font-weight: 500;">支持的 Scratch 积木</p>
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px;">
+    <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 8px 12px; font-size: 12px; color: var(--color-text-secondary);">移动 / 旋转 / 坐标</div>
+    <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 8px 12px; font-size: 12px; color: var(--color-text-secondary);">外观（说话气泡 / 造型）</div>
+    <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 8px 12px; font-size: 12px; color: var(--color-text-secondary);">事件（绿旗 / 按键）</div>
+    <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 8px 12px; font-size: 12px; color: var(--color-text-secondary);">控制（循环 / 条件）</div>
+    <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 8px 12px; font-size: 12px; color: var(--color-text-secondary);">变量 / 运算符</div>
+    <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 8px 12px; font-size: 12px; color: var(--color-text-secondary);">碰撞检测 / 边界</div>
+  </div>
+</div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+let generatedHTML = '';
+
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.style.background = 'var(--color-background-info)'; });
+dropZone.addEventListener('dragleave', () => { dropZone.style.background = ''; });
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.style.background = ''; handleFile(e.dataTransfer.files[0]); });
+fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+dropZone.addEventListener('click', () => fileInput.click());
+
+function setStatus(msg, progress) {
+  const sa = document.getElementById('status-area');
+  sa.style.display = 'block';
+  document.getElementById('status-text').textContent = msg;
+  const pb = document.getElementById('progress-bar-wrap');
+  if (progress !== undefined) {
+    pb.style.display = 'block';
+    document.getElementById('progress-bar').style.width = progress + '%';
+  }
+}
+
+async function handleFile(file) {
+  if (!file || !file.name.endsWith('.sb3')) {
+    setStatus('请选择有效的 .sb3 文件');
+    return;
+  }
+  document.getElementById('result-area').style.display = 'none';
+  setStatus('正在读取 .sb3 文件...', 10);
+
+  const arrayBuffer = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  setStatus('解析项目结构...', 30);
+
+  const projectJson = await zip.file('project.json').async('string');
+  const project = JSON.parse(projectJson);
+
+  setStatus('提取素材资源...', 50);
+  const assets = {};
+  for (const [name, zipEntry] of Object.entries(zip.files)) {
+    if (!zipEntry.dir && name !== 'project.json') {
+      const blob = await zipEntry.async('blob');
+      assets[name] = URL.createObjectURL(blob);
+    }
+  }
+
+  setStatus('生成 HTML 代码...', 75);
+  generatedHTML = generateHTML(project, assets);
+
+  setStatus('完成！', 100);
+  document.getElementById('result-area').style.display = 'block';
+  const preview = document.getElementById('code-preview');
+  preview.textContent = generatedHTML.substring(0, 3000) + (generatedHTML.length > 3000 ? '\n...(代码已截断，点击下载查看完整内容)' : '');
+}
+
+function generateHTML(project, assets) {
+  const stage = project.targets.find(t => t.isStage) || {};
+  const sprites = project.targets.filter(t => !t.isStage);
+
+  const WIDTH = 480, HEIGHT = 360;
+
+  // Collect all costumes
+  function costumeTag(target, assets) {
+    return (target.costumes || []).map(c => {
+      const key = c.md5ext || (c.assetId + '.' + c.dataFormat);
+      const url = assets[key] || '';
+      return `{name:"${c.name}",url:"${url}",bitmapResolution:${c.bitmapResolution||1},rotationCenterX:${c.rotationCenterX||0},rotationCenterY:${c.rotationCenterY||0}}`;
+    }).join(',');
+  }
+
+  // Compile blocks to JS
+  function compileBlocks(blocks, topId) {
+    const lines = [];
+    let cur = topId;
+    const visited = new Set();
+    while (cur && blocks[cur] && !visited.has(cur)) {
+      visited.add(cur);
+      const b = blocks[cur];
+      lines.push(...compileBlock(b, blocks));
+      cur = b.next;
+    }
+    return lines.join('\n');
+  }
+
+  function getInput(b, key, blocks) {
+    const inp = b.inputs && b.inputs[key];
+    if (!inp) return '0';
+    const inner = inp[1];
+    if (Array.isArray(inner)) {
+      const type = inner[0];
+      if ([4,5,6,7,8].includes(type)) return JSON.stringify(inner[1]);
+      if (type === 10) return JSON.stringify(inner[1]);
+      if (type === 12) return `getVar(${JSON.stringify(inner[1])})`;
+      return JSON.stringify(inner[1] || '');
+    }
+    if (typeof inner === 'string' && blocks[inner]) {
+      return compileReporter(blocks[inner], blocks);
+    }
+    return '0';
+  }
+
+  function getField(b, key) {
+    const f = b.fields && b.fields[key];
+    return f ? f[0] : '';
+  }
+
+  function compileReporter(b, blocks) {
+    const op = b.opcode;
+    if (op === 'operator_add') return `(${getInput(b,'NUM1',blocks)} + ${getInput(b,'NUM2',blocks)})`;
+    if (op === 'operator_subtract') return `(${getInput(b,'NUM1',blocks)} - ${getInput(b,'NUM2',blocks)})`;
+    if (op === 'operator_multiply') return `(${getInput(b,'NUM1',blocks)} * ${getInput(b,'NUM2',blocks)})`;
+    if (op === 'operator_divide') return `(${getInput(b,'NUM1',blocks)} / ${getInput(b,'NUM2',blocks)})`;
+    if (op === 'operator_mod') return `(${getInput(b,'NUM1',blocks)} % ${getInput(b,'NUM2',blocks)})`;
+    if (op === 'operator_random') return `(Math.floor(Math.random()*(${getInput(b,'TO',blocks)}-${getInput(b,'FROM',blocks)}+1))+Number(${getInput(b,'FROM',blocks)}))`;
+    if (op === 'operator_lt') return `(${getInput(b,'OPERAND1',blocks)} < ${getInput(b,'OPERAND2',blocks)})`;
+    if (op === 'operator_gt') return `(${getInput(b,'OPERAND1',blocks)} > ${getInput(b,'OPERAND2',blocks)})`;
+    if (op === 'operator_equals') return `(String(${getInput(b,'OPERAND1',blocks)}).toLowerCase() === String(${getInput(b,'OPERAND2',blocks)}).toLowerCase())`;
+    if (op === 'operator_and') return `(${getInput(b,'OPERAND1',blocks)} && ${getInput(b,'OPERAND2',blocks)})`;
+    if (op === 'operator_or') return `(${getInput(b,'OPERAND1',blocks)} || ${getInput(b,'OPERAND2',blocks)})`;
+    if (op === 'operator_not') return `(!(${getInput(b,'OPERAND',blocks)}))`;
+    if (op === 'operator_join') return `(String(${getInput(b,'STRING1',blocks)})+String(${getInput(b,'STRING2',blocks)}))`;
+    if (op === 'operator_length') return `(String(${getInput(b,'STRING',blocks)}).length)`;
+    if (op === 'operator_round') return `Math.round(${getInput(b,'NUM',blocks)})`;
+    if (op === 'operator_mathop') { const n=getInput(b,'NUM',blocks); const fn=getField(b,'OPERATOR'); const m={floor:'Math.floor',ceiling:'Math.ceil',sqrt:'Math.sqrt',abs:'Math.abs',sin:'x=>Math.sin(x*Math.PI/180)',cos:'x=>Math.cos(x*Math.PI/180)',tan:'x=>Math.tan(x*Math.PI/180)',log:'Math.log10','e ^':'Math.exp','10 ^':'x=>Math.pow(10,x)'}; return `(${m[fn]||'Math.abs'})(${n})`; }
+    if (op === 'data_variable') return `getVar(${JSON.stringify(getField(b,'VARIABLE'))})`;
+    if (op === 'sensing_keypressed') return `isKeyDown(${getInput(b,'KEY_OPTION',blocks)})`;
+    if (op === 'sensing_touchingobject') return `isTouching(sprite,${getInput(b,'TOUCHINGOBJECTMENU',blocks)})`;
+    if (op === 'sensing_touchingcolor') return `false`;
+    if (op === 'sensing_distanceto') return `0`;
+    if (op === 'sensing_mousedown') return `mouseDown`;
+    if (op === 'sensing_mousex') return `(mouseX)`;
+    if (op === 'sensing_mousey') return `(mouseY)`;
+    if (op === 'motion_xposition') return `sprite.x`;
+    if (op === 'motion_yposition') return `sprite.y`;
+    if (op === 'motion_direction') return `sprite.direction`;
+    if (op === 'looks_costumenumbername') { const t=getField(b,'NUMBER_NAME'); return t==='name'?`sprite.costumes[sprite.costumeIndex].name`:`sprite.costumeIndex+1`; }
+    if (op === 'looks_size') return `sprite.size`;
+    return '0';
+  }
+
+  function compileCondition(b, blocks) {
+    if (!b) return 'false';
+    return compileReporter(b, blocks);
+  }
+
+  function compileBlock(b, blocks) {
+    const op = b.opcode;
+    if (!op) return [];
+    const lines = [];
+
+    if (op === 'motion_movesteps') lines.push(`sprite.move(${getInput(b,'STEPS',blocks)});`);
+    else if (op === 'motion_turnright') lines.push(`sprite.direction=(sprite.direction+Number(${getInput(b,'DEGREES',blocks)}))%360;`);
+    else if (op === 'motion_turnleft') lines.push(`sprite.direction=(sprite.direction-Number(${getInput(b,'DEGREES',blocks)})+360)%360;`);
+    else if (op === 'motion_goto') {
+      const t = getField(b,'TO');
+      if (t==='_random_') lines.push(`sprite.x=Math.random()*480-240;sprite.y=Math.random()*360-180;`);
+      else if (t==='_mouse_') lines.push(`sprite.x=mouseX;sprite.y=mouseY;`);
+    }
+    else if (op === 'motion_gotoxy') lines.push(`sprite.x=Number(${getInput(b,'X',blocks)});sprite.y=Number(${getInput(b,'Y',blocks)});`);
+    else if (op === 'motion_glideto') { /* simplified */ }
+    else if (op === 'motion_glidesecstoxy') lines.push(`sprite.x=Number(${getInput(b,'X',blocks)});sprite.y=Number(${getInput(b,'Y',blocks)});`);
+    else if (op === 'motion_pointindirection') lines.push(`sprite.direction=Number(${getInput(b,'DIRECTION',blocks)});`);
+    else if (op === 'motion_pointtowards') {
+      const t=getField(b,'TOWARDS');
+      if(t==='_mouse_') lines.push(`sprite.direction=Math.atan2(mouseX-sprite.x,sprite.y-mouseY)*180/Math.PI;`);
+    }
+    else if (op === 'motion_changexby') lines.push(`sprite.x+=Number(${getInput(b,'DX',blocks)});`);
+    else if (op === 'motion_setx') lines.push(`sprite.x=Number(${getInput(b,'X',blocks)});`);
+    else if (op === 'motion_changeyby') lines.push(`sprite.y+=Number(${getInput(b,'DY',blocks)});`);
+    else if (op === 'motion_sety') lines.push(`sprite.y=Number(${getInput(b,'Y',blocks)});`);
+    else if (op === 'motion_ifonedgebounce') lines.push(`sprite.bounceOnEdge();`);
+    else if (op === 'motion_setrotationstyle') lines.push(`sprite.rotationStyle=${JSON.stringify(getField(b,'STYLE'))};`);
+    else if (op === 'looks_say') lines.push(`sprite.say=${getInput(b,'MESSAGE',blocks)};sprite.sayTimer=180;`);
+    else if (op === 'looks_sayforsecs') lines.push(`sprite.say=${getInput(b,'MESSAGE',blocks)};sprite.sayTimer=Number(${getInput(b,'SECS',blocks)})*60;`);
+    else if (op === 'looks_think') lines.push(`sprite.think=${getInput(b,'MESSAGE',blocks)};sprite.thinkTimer=180;`);
+    else if (op === 'looks_thinkforsecs') lines.push(`sprite.think=${getInput(b,'MESSAGE',blocks)};sprite.thinkTimer=Number(${getInput(b,'SECS',blocks)})*60;`);
+    else if (op === 'looks_switchcostumeto') lines.push(`sprite.switchCostume(${getInput(b,'COSTUME',blocks)});`);
+    else if (op === 'looks_nextcostume') lines.push(`sprite.costumeIndex=(sprite.costumeIndex+1)%sprite.costumes.length;`);
+    else if (op === 'looks_setsizeto') lines.push(`sprite.size=Number(${getInput(b,'SIZE',blocks)});`);
+    else if (op === 'looks_changesizeby') lines.push(`sprite.size+=Number(${getInput(b,'CHANGE',blocks)});`);
+    else if (op === 'looks_show') lines.push(`sprite.visible=true;`);
+    else if (op === 'looks_hide') lines.push(`sprite.visible=false;`);
+    else if (op === 'looks_seteffectto') lines.push(`sprite.effects[${JSON.stringify(getField(b,'EFFECT'))}]=Number(${getInput(b,'VALUE',blocks)});`);
+    else if (op === 'looks_changeeffectby') lines.push(`sprite.effects[${JSON.stringify(getField(b,'EFFECT'))}]=(sprite.effects[${JSON.stringify(getField(b,'EFFECT'))}]||0)+Number(${getInput(b,'CHANGE',blocks)});`);
+    else if (op === 'looks_cleargraphiceffects') lines.push(`sprite.effects={};`);
+    else if (op === 'data_setvariableto') lines.push(`setVar(${JSON.stringify(getField(b,'VARIABLE'))},${getInput(b,'VALUE',blocks)});`);
+    else if (op === 'data_changevariableby') lines.push(`setVar(${JSON.stringify(getField(b,'VARIABLE'))},Number(getVar(${JSON.stringify(getField(b,'VARIABLE'))}))+Number(${getInput(b,'VALUE',blocks)}));`);
+    else if (op === 'data_addtolist') lines.push(`{ const ln=${JSON.stringify(getField(b,'LIST'))}; if(!lists[ln])lists[ln]=[]; lists[ln].push(${getInput(b,'ITEM',blocks)}); }`);
+    else if (op === 'data_deleteoflist') lines.push(`{ const ln=${JSON.stringify(getField(b,'LIST'))}; if(lists[ln]) lists[ln].splice(Number(${getInput(b,'INDEX',blocks)})-1,1); }`);
+    else if (op === 'data_deletealloflist') lines.push(`lists[${JSON.stringify(getField(b,'LIST'))}]=[];`);
+    else if (op === 'control_wait') lines.push(`await wait(Number(${getInput(b,'DURATION',blocks)}));`);
+    else if (op === 'control_repeat') {
+      const n = getInput(b,'TIMES',blocks);
+      const sub = b.inputs && b.inputs.SUBSTACK && b.inputs.SUBSTACK[1];
+      const body = sub ? compileBlocks(blocks, sub) : '';
+      lines.push(`for(let _i=0;_i<Number(${n});_i++){${body}await tick();}`);
+    }
+    else if (op === 'control_forever') {
+      const sub = b.inputs && b.inputs.SUBSTACK && b.inputs.SUBSTACK[1];
+      const body = sub ? compileBlocks(blocks, sub) : '';
+      lines.push(`while(running){${body}await tick();}`);
+    }
+    else if (op === 'control_if') {
+      const condId = b.inputs && b.inputs.CONDITION && b.inputs.CONDITION[1];
+      const cond = condId && blocks[condId] ? compileReporter(blocks[condId], blocks) : 'false';
+      const sub = b.inputs && b.inputs.SUBSTACK && b.inputs.SUBSTACK[1];
+      const body = sub ? compileBlocks(blocks, sub) : '';
+      lines.push(`if(${cond}){${body}}`);
+    }
+    else if (op === 'control_if_else') {
+      const condId = b.inputs && b.inputs.CONDITION && b.inputs.CONDITION[1];
+      const cond = condId && blocks[condId] ? compileReporter(blocks[condId], blocks) : 'false';
+      const sub1 = b.inputs && b.inputs.SUBSTACK && b.inputs.SUBSTACK[1];
+      const sub2 = b.inputs && b.inputs.SUBSTACK2 && b.inputs.SUBSTACK2[1];
+      lines.push(`if(${cond}){${sub1?compileBlocks(blocks,sub1):''}}else{${sub2?compileBlocks(blocks,sub2):''}}`);
+    }
+    else if (op === 'control_wait_until') {
+      const condId = b.inputs && b.inputs.CONDITION && b.inputs.CONDITION[1];
+      const cond = condId && blocks[condId] ? compileReporter(blocks[condId], blocks) : 'false';
+      lines.push(`while(!(${cond})){await tick();}`);
+    }
+    else if (op === 'control_repeat_until') {
+      const condId = b.inputs && b.inputs.CONDITION && b.inputs.CONDITION[1];
+      const cond = condId && blocks[condId] ? compileReporter(blocks[condId], blocks) : 'false';
+      const sub = b.inputs && b.inputs.SUBSTACK && b.inputs.SUBSTACK[1];
+      const body = sub ? compileBlocks(blocks, sub) : '';
+      lines.push(`while(running&&!(${cond})){${body}await tick();}`);
+    }
+    else if (op === 'control_stop') { lines.push(`running=false;return;`); }
+    else if (op === 'control_create_clone_of') { /* simplified */ }
+    else if (op === 'sound_play') { /* simplified */ }
+    else if (op === 'sound_playuntildone') { /* simplified */ }
+
+    return lines;
+  }
+
+  // Generate sprite scripts
+  function generateSpriteScript(target) {
+    const blocks = target.blocks || {};
+    const scripts = [];
+
+    for (const [id, block] of Object.entries(blocks)) {
+      if (block.topLevel) {
+        const op = block.opcode;
+        const body = compileBlocks(blocks, block.next || null);
+        if (!body && op !== 'event_whenflagclicked' && op !== 'event_whenkeypressed') continue;
+
+        if (op === 'event_whenflagclicked') {
+          scripts.push(`sprite.on('flag', async function(){${body}});`);
+        } else if (op === 'event_whenkeypressed') {
+          const key = block.fields && block.fields.KEY_OPTION ? block.fields.KEY_OPTION[0] : '';
+          scripts.push(`sprite.on('key:${key}', async function(){${body}});`);
+        } else if (op === 'event_whenbroadcastreceived') {
+          const msg = block.fields && block.fields.BROADCAST_OPTION ? block.fields.BROADCAST_OPTION[0] : '';
+          scripts.push(`sprite.on('broadcast:${msg}', async function(){${body}});`);
+        } else if (op === 'control_start_as_clone') {
+          scripts.push(`sprite.on('clone', async function(){${body}});`);
+        }
+      }
+    }
+    return scripts.join('\n');
+  }
+
+  // Variables
+  const globalVars = {};
+  (project.variables || []).forEach(([id, name, val]) => { globalVars[name] = val; });
+  for (const t of project.targets) {
+    Object.values(t.variables || {}).forEach(([name, val]) => { globalVars[name] = val; });
+  }
+
+  const spriteDefs = sprites.map((sp, i) => {
+    const costumes = costumeTag(sp, assets);
+    const scripts = generateSpriteScript(sp);
+    return `{
+      name: ${JSON.stringify(sp.name)},
+      x: ${sp.x || 0}, y: ${sp.y || 0},
+      direction: ${sp.direction || 90},
+      size: ${sp.size || 100},
+      visible: ${sp.visible !== false},
+      rotationStyle: ${JSON.stringify(sp.rotationStyle || 'all around')},
+      costumes: [${costumes}],
+      costumeIndex: ${sp.currentCostume || 0},
+      scripts: function(sprite){ ${scripts} }
+    }`;
+  }).join(',\n');
+
+  const stageCostumes = costumeTag(stage, assets);
+  const stageScripts = generateSpriteScript(stage);
+
+  return `<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Scratch 游戏</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#1e1e2e;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:sans-serif;}
+h1{color:#cdd6f4;font-size:18px;margin-bottom:12px;}
+#canvas{border-radius:8px;display:block;}
+#controls{margin-top:12px;display:flex;gap:10px;}
+button{padding:8px 20px;border:none;border-radius:6px;background:#89b4fa;color:#1e1e2e;font-weight:600;cursor:pointer;font-size:14px;}
+button:hover{background:#b4d0ff;}
+#vars{color:#a6adc8;font-size:12px;margin-top:10px;max-width:480px;word-break:break-all;}
+</style>
+</head>
+<body>
+<h1>Scratch 游戏</h1>
+<canvas id="canvas" width="${WIDTH}" height="${HEIGHT}"></canvas>
+<div id="controls">
+  <button id="startBtn">▶ 运行</button>
+  <button id="stopBtn">■ 停止</button>
+</div>
+<div id="vars"></div>
+<script>
+const W=${WIDTH},H=${HEIGHT};
+const canvas=document.getElementById('canvas');
+const ctx=canvas.getContext('2d');
+let running=false;
+let keys={}, mouseX=0, mouseY=0, mouseDown=false;
+let vars={${Object.entries(globalVars).map(([k,v])=>`${JSON.stringify(k)}:${JSON.stringify(v)}`).join(',')}};
+let lists={};
+let frameCallbacks=[];
+let sprites=[];
+let stageObj=null;
+
+function getVar(name){return vars[name]!==undefined?vars[name]:0;}
+function setVar(name,val){vars[name]=val;}
+function isKeyDown(k){return !!keys[k.toLowerCase()];}
+
+document.addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true;keys[e.code.toLowerCase()]=true;
+  sprites.forEach(s=>s.emit('key:'+e.key.toLowerCase()));
+  sprites.forEach(s=>s.emit('key:'+e.code.toLowerCase()));
+  if(stageObj)stageObj.emit('key:'+e.key.toLowerCase());
+});
+document.addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false;keys[e.code.toLowerCase()]=false;});
+canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouseX=(e.clientX-r.left-W/2);mouseY=(H/2-(e.clientY-r.top));});
+canvas.addEventListener('mousedown',()=>mouseDown=true);
+canvas.addEventListener('mouseup',()=>mouseDown=false);
+
+function wait(secs){return new Promise(r=>setTimeout(r,secs*1000));}
+function tick(){return new Promise(r=>requestAnimationFrame(r));}
+
+function isTouching(sprite, target){
+  if(target==='_edge_'){
+    return sprite.x+sprite.w/2>W/2||sprite.x-sprite.w/2<-W/2||sprite.y+sprite.h/2>H/2||sprite.y-sprite.h/2<-H/2;
+  }
+  const other=sprites.find(s=>s.name===target);
+  if(!other||!other.visible)return false;
+  return Math.abs(sprite.x-other.x)<(sprite.w+other.w)/2&&Math.abs(sprite.y-other.y)<(sprite.h+other.h)/2;
+}
+
+class Sprite {
+  constructor(def){
+    Object.assign(this,{x:0,y:0,direction:90,size:100,visible:true,rotationStyle:'all around',say:null,sayTimer:0,think:null,thinkTimer:0,effects:{},w:60,h:60,...def});
+    this._handlers={};
+    this._images={};
+    this.loadImages();
+  }
+  loadImages(){
+    (this.costumes||[]).forEach((c,i)=>{
+      if(!c.url)return;
+      const img=new Image();
+      img.src=c.url;
+      img.onload=()=>{this._images[i]=img;};
+      this._images[i]=img;
+    });
+  }
+  on(ev,fn){if(!this._handlers[ev])this._handlers[ev]=[];this._handlers[ev].push(fn);}
+  emit(ev){(this._handlers[ev]||[]).forEach(fn=>{fn.call(this);});}
+  move(steps){
+    const rad=(this.direction-90)*Math.PI/180;
+    this.x+=Math.cos(rad)*steps;
+    this.y-=Math.sin(rad)*steps;
+  }
+  bounceOnEdge(){
+    if(this.x>W/2-this.w/2||this.x<-W/2+this.w/2)this.direction=180-this.direction;
+    if(this.y>H/2-this.h/2||this.y<-H/2+this.h/2)this.direction=-this.direction;
+    this.x=Math.max(-W/2+this.w/2,Math.min(W/2-this.w/2,this.x));
+    this.y=Math.max(-H/2+this.h/2,Math.min(H/2-this.h/2,this.y));
+  }
+  switchCostume(nameOrNum){
+    const idx=this.costumes.findIndex(c=>c.name===String(nameOrNum));
+    if(idx>=0)this.costumeIndex=idx;
+    else{const n=Number(nameOrNum)-1;if(n>=0&&n<this.costumes.length)this.costumeIndex=n;}
+  }
+  draw(){
+    if(!this.visible)return;
+    ctx.save();
+    const cx=this.x+W/2, cy=H/2-this.y;
+    ctx.translate(cx,cy);
+    if(this.rotationStyle==='all around')ctx.rotate((this.direction-90)*Math.PI/180);
+    else if(this.rotationStyle==='left-right'&&this.direction<0)ctx.scale(-1,1);
+    const scale=this.size/100;
+    const img=this._images[this.costumeIndex];
+    if(img&&img.complete&&img.naturalWidth>0){
+      const br=this.costumes[this.costumeIndex]?.bitmapResolution||1;
+      const w=img.naturalWidth/br*scale, h=img.naturalHeight/br*scale;
+      const rx=this.costumes[this.costumeIndex]?.rotationCenterX||img.naturalWidth/2;
+      const ry=this.costumes[this.costumeIndex]?.rotationCenterY||img.naturalHeight/2;
+      this.w=w;this.h=h;
+      if(this.effects.ghost){ctx.globalAlpha=1-this.effects.ghost/100;}
+      if(this.effects.color){ctx.filter='hue-rotate('+this.effects.color*3.6+'deg)';}
+      ctx.drawImage(img,-rx/br*scale,-ry/br*scale,w,h);
+    } else {
+      ctx.fillStyle='#4488ff';ctx.fillRect(-20,-20,40,40);
+      this.w=40;this.h=40;
+    }
+    ctx.restore();
+    if(this.sayTimer>0){
+      const bx=cx+10, by=cy-40;
+      ctx.fillStyle='white';ctx.strokeStyle='#aaa';
+      const tw=ctx.measureText(String(this.say)).width+16;
+      ctx.beginPath();ctx.roundRect(bx,by-28,tw,28,6);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#222';ctx.font='13px sans-serif';ctx.fillText(String(this.say),bx+8,by-10);
+      this.sayTimer--;
+    }
+    if(this.thinkTimer>0){this.thinkTimer--;}
+  }
+}
+
+const spriteDefs=[${spriteDefs}];
+
+function initSprites(){
+  sprites=spriteDefs.map(def=>{
+    const s=new Sprite(def);
+    if(def.scripts)def.scripts(s);
+    return s;
+  });
+  const stageDef={
+    name:'Stage',x:0,y:0,costumes:[${stageCostumes}],costumeIndex:${stage.currentCostume||0},
+    isStage:true,visible:true,_handlers:{},_images:{},
+    on(ev,fn){if(!this._handlers[ev])this._handlers[ev]=[];this._handlers[ev].push(fn);},
+    emit(ev){(this._handlers[ev]||[]).forEach(fn=>fn.call(this));},
+    loadImages(){}
+  };
+  const stageSprite=new Sprite(stageDef);
+  (function(sprite){ ${stageScripts} })(stageSprite);
+  stageObj=stageSprite;
+}
+
+async function gameLoop(){
+  running=true;
+  initSprites();
+  sprites.forEach(s=>s.emit('flag'));
+  if(stageObj)stageObj.emit('flag');
+  while(running){
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle='#fff';ctx.fillRect(0,0,W,H);
+    if(stageObj){
+      const img=stageObj._images[stageObj.costumeIndex];
+      if(img&&img.complete&&img.naturalWidth>0)ctx.drawImage(img,0,0,W,H);
+    }
+    sprites.forEach(s=>s.draw());
+    const vhtml=Object.entries(vars).map(([k,v])=>\`<b>\${k}</b>: \${v}\`).join(' &nbsp; ');
+    document.getElementById('vars').innerHTML=vhtml;
+    await tick();
+  }
+}
+
+document.getElementById('startBtn').onclick=()=>{if(!running)gameLoop();};
+document.getElementById('stopBtn').onclick=()=>{running=false;ctx.clearRect(0,0,W,H);ctx.fillStyle='#fff';ctx.fillRect(0,0,W,H);};
+<\/script>
+</body>
+</html>`;
+}
+
+document.getElementById('download-btn').onclick = () => {
+  const blob = new Blob([generatedHTML], {type: 'text/html'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'scratch_game.html';
+  a.click();
+};
+
+document.getElementById('preview-btn').onclick = () => {
+  const blob = new Blob([generatedHTML], {type: 'text/html'});
+  window.open(URL.createObjectURL(blob), '_blank');
+};
+
+document.getElementById('copy-btn').onclick = () => {
+  navigator.clipboard.writeText(generatedHTML).then(() => {
+    document.getElementById('copy-btn').textContent = '已复制！';
+    setTimeout(() => document.getElementById('copy-btn').textContent = '复制代码', 2000);
+  });
+};
+</script>
