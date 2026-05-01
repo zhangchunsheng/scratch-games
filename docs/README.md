@@ -1,6 +1,7 @@
 ```shell
-编写代码将scratch游戏转为html
+编写代码将 scratch 游戏转为 html
 claude
 /init
-将claude.md改为中文
+将 claude.md 改为中文
+更新 README.md
 ```
