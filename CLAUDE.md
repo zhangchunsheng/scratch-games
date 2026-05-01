@@ -1,60 +1,60 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+本文档为 Claude Code (claude.ai/code) 在此仓库中工作提供指导。
 
-## Project Overview
+## 项目概述
 
-Scratch to HTML converter - a tool that parses `.sb3` files (Scratch 3.0 project format) and generates standalone HTML games that can run in the browser without a server.
+Scratch 到 HTML 转换器 —— 解析 `.sb3` 文件（Scratch 3.0 项目格式）并生成可在浏览器中独立运行的 HTML 游戏，无需服务器。
 
-## Architecture
+## 架构
 
-The project consists of two HTML-based converter tools:
+项目包含两个基于 HTML 的转换器工具：
 
 ### `scratch_to_html_converter.html`
-- Modern UI with drag-and-drop support for `.sb3` files
-- Uses **JSZip** (via CDN) to unpack `.sb3` archives
-- Parses `project.json` from the SB3 bundle and extracts assets (costumes, sounds)
-- Generates a self-contained HTML file with the game logic translated to JavaScript
-- Supported blocks:
-  - Motion: move, rotate, goto x/y, get position, bounce
-  - Looks: say/think bubbles, switch costume, size, effects
-  - Events: green flag, key press, broadcast
-  - Control: loops, conditionals, wait, repeat until
-  - Operators: math, comparisons, random
-  - Variables: get/set
-- Limitations:
-  - Sound blocks not implemented (requires Web Audio API)
-  - Clone support is basic
-  - Video sensing and custom blocks not supported
+- 现代化 UI，支持拖拽上传 `.sb3` 文件
+- 使用 **JSZip**（通过 CDN）解压 `.sb3` 压缩包
+- 解析 SB3 包中的 `project.json` 并提取素材资源（造型、声音）
+- 生成自包含的 HTML 文件，游戏逻辑被转换为 JavaScript
+- 支持的积木类型：
+  - 运动：移动、旋转、坐标定位、获取位置、弹射
+  - 外观：说话/思考气泡、切换造型、大小、特效
+  - 事件：绿旗、按键、广播
+  - 控制：循环、条件、等待、重复直到
+  - 运算：数学运算、比较、随机数
+  - 变量：读取/设置
+- 局限性：
+  - 声音积木未实现（需要 Web Audio API）
+  - 克隆功能为基础版本
+  - 视频侦测和自定义积木暂不支持
 
 ### `htmlifier-offline.html`
-- Fork of HTMLifier (SheepTester) for offline conversion
-- Contains CSS by Mr. Cringe Kid
-- More extensive block support (see the `convertBlock` function in the file)
+- HTMLifier（SheepTester）的离线版本分支
+- 包含 Mr. Cringe Kid 的 CSS
+- 支持更多积木类型（详见文件中的 `convertBlock` 函数）
 
-## Generated Output Structure
+## 生成输出结构
 
-Both converters produce HTML files containing:
-- A `<game-container>` element with the stage and sprites
-- CSS for Scratch-like rendering
-- JavaScript that:
-  - Initializes the game loop
-  - Maps Scratch blocks to JS functions
-  - Handles collision detection and boundary checks
-  - Manages sprite state (position, direction, costume, variables)
+两个转换器生成的 HTML 文件包含：
+- `<game-container>` 元素，包含舞台和角色
+- Scratch 风格的 CSS 样式
+- JavaScript 代码：
+  - 初始化游戏循环
+  - 将 Scratch 积木映射为 JS 函数
+  - 处理碰撞检测和边界检查
+  - 管理角色状态（位置、方向、造型、变量）
 
-## Development
+## 开发
 
-This is a static HTML/JS project - no build system or dependencies beyond JSZip. To develop:
+这是一个静态 HTML/JS 项目 —— 除了 JSZip 外无需构建系统或依赖。开发方式：
 
-1. Open either converter HTML file in a browser
-2. Test with `.sb3` files to verify conversion output
-3. Check generated HTML runs correctly by opening in browser
+1. 在浏览器中打开任一转换器 HTML 文件
+2. 使用 `.sb3` 文件测试转换输出
+3. 在浏览器中打开生成的 HTML 验证运行效果
 
-## Testing
+## 测试
 
-Manual testing workflow:
-1. Upload a `.sb3` file via drag-drop or file picker
-2. Download the generated HTML
-3. Open the output HTML in a browser
-4. Verify the game runs (green flag starts, controls respond)
+手动测试流程：
+1. 通过拖拽或文件选择器上传 `.sb3` 文件
+2. 下载生成的 HTML
+3. 在浏览器中打开输出的 HTML
+4. 验证游戏是否可运行（绿旗启动、响应控制）
