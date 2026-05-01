@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Scratch 游戏</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#1e1e2e;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:sans-serif;}
+h1{color:#cdd6f4;font-size:18px;margin-bottom:12px;}
+#canvas{border-radius:8px;display:block;}
+#controls{margin-top:12px;display:flex;gap:10px;}
+button{padding:8px 20px;border:none;border-radius:6px;background:#89b4fa;color:#1e1e2e;font-weight:600;cursor:pointer;font-size:14px;}
+button:hover{background:#b4d0ff;}
+#vars{color:#a6adc8;font-size:12px;margin-top:10px;max-width:480px;word-break:break-all;}
+</style>
+</head>
+<body>
+<h1>Scratch 游戏</h1>
+<canvas id="canvas" width="480" height="360"></canvas>
+<div id="controls">
+  <button id="startBtn">▶ 运行</button>
+  <button id="stopBtn">■ 停止</button>
+</div>
+<div id="vars"></div>
+<script>
+const W=480,H=360;
+const canvas=document.getElementById('canvas');
+const ctx=canvas.getContext('2d');
+let running=false;
+let keys={}, mouseX=0, mouseY=0, mouseDown=false;
+let vars={"地图x":228.096323976959,"遍历":31,"金币":6,"n":6,"开关":"1","生命":"5","积分":400,"随机数":2,"m":13,"计时":18,"物品":"0","克隆":"0","大招":"0","boss无敌":"1","boss血量":"100","我的变量":"50","关卡":"1","速度x":0,"重力y":"0","跳y":-1,"x":0,"造型":3,"编号":0,"y":0,"左":"0","右":"0","激活":0,"血包编号":6,"时间编号":4,"金币编号":4,"积分编号":7,"速度y":0,"空中":0};
+let lists={};
+let frameCallbacks=[];
+let sprites=[];
+let stageObj=null;
+
+function getVar(name){return vars[name]!==undefined?vars[name]:0;}
+function setVar(name,val){vars[name]=val;}
+function isKeyDown(k){return !!keys[k.toLowerCase()];}
+
+document.addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true;keys[e.code.toLowerCase()]=true;
+  sprites.forEach(s=>s.emit('key:'+e.key.toLowerCase()));
+  sprites.forEach(s=>s.emit('key:'+e.code.toLowerCase()));
+  if(stageObj)stageObj.emit('key:'+e.key.toLowerCase());
+});
+document.addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false;keys[e.code.toLowerCase()]=false;});
+canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouseX=(e.clientX-r.left-W/2);mouseY=(H/2-(e.clientY-r.top));});
+canvas.addEventListener('mousedown',()=>mouseDown=true);
+canvas.addEventListener('mouseup',()=>mouseDown=false);
+
+function wait(secs){return new Promise(r=>setTimeout(r,secs*1000));}
+function tick(){return new Promise(r=>requestAnimationFrame(r));}
+
+function isTouching(sprite, target){
+  if(target==='_edge_'){
+    return sprite.x+sprite.w/2>W/2||sprite.x-sprite.w/2<-W/2||sprite.y+sprite.h/2>H/2||sprite.y-sprite.h/2<-H/2;
+  }
+  const other=sprites.find(s=>s.name===target);
+  if(!other||!other.visible)return false;
+  return Math.abs(sprite.x-other.x)<(sprite.w+other.w)/2&&Math.abs(sprite.y-other.y)<(sprite.h+other.h)/2;
+}
+
+class Sprite {
+  constructor(def){
+    Object.assign(this,{x:0,y:0,direction:90,size:100,visible:true,rotationStyle:'all around',say:null,sayTimer:0,think:null,thinkTimer:0,effects:{},w:60,h:60,...def});
+    this._handlers={};
+    this._images={};
+    this.loadImages();
+  }
+  loadImages(){
+    (this.costumes||[]).forEach((c,i)=>{
+      if(!c.url)return;
+      const img=new Image();
+      img.src=c.url;
+      img.onload=()=>{this._images[i]=img;};
+      this._images[i]=img;
+    });
+  }
+  on(ev,fn){if(!this._handlers[ev])this._handlers[ev]=[];this._handlers[ev].push(fn);}
+  emit(ev){(this._handlers[ev]||[]).forEach(fn=>{fn.call(this);});}
+  move(steps){
+    const rad=(this.direction-90)*Math.PI/180;
+    this.x+=Math.cos(rad)*steps;
+    this.y-=Math.sin(rad)*steps;
+  }
+  bounceOnEdge(){
+    if(this.x>W/2-this.w/2||this.x<-W/2+this.w/2)this.direction=180-this.direction;
+    if(this.y>H/2-this.h/2||this.y<-H/2+this.h/2)this.direction=-this.direction;
+    this.x=Math.max(-W/2+this.w/2,Math.min(W/2-this.w/2,this.x));
+    this.y=Math.max(-H/2+this.h/2,Math.min(H/2-this.h/2,this.y));
+  }
+  switchCostume(nameOrNum){
+    const idx=this.costumes.findIndex(c=>c.name===String(nameOrNum));
+    if(idx>=0)this.costumeIndex=idx;
+    else{const n=Number(nameOrNum)-1;if(n>=0&&n<this.costumes.length)this.costumeIndex=n;}
+  }
+  draw(){
+    if(!this.visible)return;
+    ctx.save();
+    const cx=this.x+W/2, cy=H/2-this.y;
+    ctx.translate(cx,cy);
+    if(this.rotationStyle==='all around')ctx.rotate((this.direction-90)*Math.PI/180);
+    else if(this.rotationStyle==='left-right'&&this.direction<0)ctx.scale(-1,1);
+    const scale=this.size/100;
+    const img=this._images[this.costumeIndex];
+    if(img&&img.complete&&img.naturalWidth>0){
+      const br=this.costumes[this.costumeIndex]?.bitmapResolution||1;
+      const w=img.naturalWidth/br*scale, h=img.naturalHeight/br*scale;
+      const rx=this.costumes[this.costumeIndex]?.rotationCenterX||img.naturalWidth/2;
+      const ry=this.costumes[this.costumeIndex]?.rotationCenterY||img.naturalHeight/2;
+      this.w=w;this.h=h;
+      if(this.effects.ghost){ctx.globalAlpha=1-this.effects.ghost/100;}
+      if(this.effects.color){ctx.filter='hue-rotate('+this.effects.color*3.6+'deg)';}
+      ctx.drawImage(img,-rx/br*scale,-ry/br*scale,w,h);
+    } else {
+      ctx.fillStyle='#4488ff';ctx.fillRect(-20,-20,40,40);
+      this.w=40;this.h=40;
+    }
+    ctx.restore();
+    if(this.sayTimer>0){
+      const bx=cx+10, by=cy-40;
+      ctx.fillStyle='white';ctx.strokeStyle='#aaa';
+      const tw=ctx.measureText(String(this.say)).width+16;
+      ctx.beginPath();ctx.roundRect(bx,by-28,tw,28,6);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#222';ctx.font='13px sans-serif';ctx.fillText(String(this.say),bx+8,by-10);
+      this.sayTimer--;
+    }
+    if(this.thinkTimer>0){this.thinkTimer--;}
+  }
+}
+
+const spriteDefs=[{
+      name: "马里奥",
+      x: 0, y: 21,
+      direction: 90,
+      size: 350,
+      visible: true,
+      rotationStyle: "left-right",
+      costumes: [{name:"走1",url:"blob:null/c5a6e26b-1d78-458c-bc3b-f2f79b96be11",bitmapResolution:2,rotationCenterX:7,rotationCenterY:13},{name:"走2",url:"blob:null/2b923a08-ebe5-417b-a83d-bb70dbde588f",bitmapResolution:2,rotationCenterX:8,rotationCenterY:13},{name:"走3",url:"blob:null/762e64d3-025a-4e2e-8e1f-9849c500de4f",bitmapResolution:2,rotationCenterX:8,rotationCenterY:13},{name:"跑1",url:"blob:null/9c790e49-49a0-43f3-af9e-e500978b1ee9",bitmapResolution:2,rotationCenterX:9,rotationCenterY:13},{name:"跑2",url:"blob:null/cdeed0c7-d0f1-4db6-9968-79047319f8bf",bitmapResolution:2,rotationCenterX:9,rotationCenterY:13},{name:"跑3",url:"blob:null/e11eb51e-7b8f-4a82-831c-96bff9b268e2",bitmapResolution:2,rotationCenterX:9,rotationCenterY:13},{name:"跑4",url:"blob:null/cdeed0c7-d0f1-4db6-9968-79047319f8bf",bitmapResolution:2,rotationCenterX:9,rotationCenterY:13},{name:"跳",url:"blob:null/0210cbc7-c8bf-47c5-a59b-6f98eafe6333",bitmapResolution:2,rotationCenterX:8,rotationCenterY:13},{name:"死亡",url:"blob:null/3da283a3-6200-4792-a9cd-87edbbd9b15a",bitmapResolution:2,rotationCenterX:16,rotationCenterY:16},{name:"刚体",url:"blob:null/2de53af2-141f-4094-a801-b4749ecf34ad",bitmapResolution:1,rotationCenterX:3.5,rotationCenterY:6.5}],
+      costumeIndex: 0,
+      scripts: function(sprite){ sprite.on('flag', async function(){while(running){if((String(getVar("开关")).toLowerCase() === String("1").toLowerCase())){sprite.x=Number("-220");sprite.y=Number("100");
+sprite.direction=Number("90");
+setVar("地图x","0");
+setVar("速度x","0");
+setVar("重力y","0");
+while(running&&!((String(getVar("开关")).toLowerCase() === String("0").toLowerCase()))){await tick();}}await tick();}});
+sprite.on('flag', async function(){setVar("关卡","1");
+setVar("地图x","0");
+setVar("金币","0");
+setVar("积分","0");
+setVar("开关","1");
+setVar("生命","5");
+while(running){if((String(getVar("开关")).toLowerCase() === String("1").toLowerCase())){while(running&&!((String(getVar("开关")).toLowerCase() === String("0").toLowerCase()))){sprite.switchCostume(0);
+if((getVar("重力y") > "0")){sprite.switchCostume(0);
+await wait(Number("0.1"));}else{if(((String(getVar("重力y")).toLowerCase() === String("0").toLowerCase()) && (((Math.abs)(getVar("速度x")) > "1") && ((Math.abs)(getVar("速度x")) < "6")))){sprite.switchCostume(0);
+for(let _i=0;_i<Number("2");_i++){await wait(Number("0.1"));
+sprite.costumeIndex=(sprite.costumeIndex+1)%sprite.costumes.length;await tick();}}else{if(((String(getVar("重力y")).toLowerCase() === String("0").toLowerCase()) && (((Math.abs)(getVar("速度x")) > "6") && ((Math.abs)(getVar("速度x")) < "7")))){sprite.switchCostume(0);
+for(let _i=0;_i<Number("3");_i++){await wait(Number("0.05"));
+sprite.costumeIndex=(sprite.costumeIndex+1)%sprite.costumes.length;await tick();}}else{sprite.switchCostume(0);}}}await tick();}
+sprite.switchCostume(0);
+sprite.x=Number("0");sprite.y=Number("60");}await tick();}});
+sprite.on('broadcast:被踩', async function(){setVar("重力y","15");});
+sprite.on('broadcast:飞行', async function(){while(running&&!((0 > "29"))){if((getVar("地图x") < "5280")){setVar("地图x",Number(getVar("地图x"))+Number(getVar("速度x")));
+setVar("重力y","0");
+if((isKeyDown(0) || isKeyDown(0))){sprite.y+=Number("10");}}else{setVar("地图x","5280");
+setVar("重力y","0");
+sprite.x+=Number(getVar("速度x"));
+if((isKeyDown(0) || isKeyDown(0))){sprite.y+=Number("10");}else{sprite.y+=Number("-5");}}await tick();}});
+sprite.on('flag', async function(){while(running){if((isTouching(sprite,0) || (isTouching(sprite,0) || isTouching(sprite,0)))){for(let _i=0;_i<Number("10");_i++){sprite.effects["BRIGHTNESS"]=(sprite.effects["BRIGHTNESS"]||0)+Number("10");await tick();}
+for(let _i=0;_i<Number("10");_i++){sprite.effects["BRIGHTNESS"]=(sprite.effects["BRIGHTNESS"]||0)+Number("-10");await tick();}
+sprite.x=Number("-220");sprite.y=Number("100");
+sprite.direction=Number("90");
+setVar("生命",Number(getVar("生命"))+Number("-1"));
+setVar("速度x","0");
+setVar("重力y","0");}await tick();}});
+sprite.on('broadcast:next', async function(){sprite.x=Number("-220");sprite.y=Number("100");
+sprite.direction=Number("90");
+await wait(Number("1"));
+setVar("速度x","0");
+setVar("重力y","0");
+setVar("地图x","0");}); }
+    },
+{
+      name: "食人花 ",
+      x: 103, y: 118,
+      direction: 90,
+      size: 50,
+      visible: false,
+      rotationStyle: "don't rotate",
+      costumes: [{name:"NSMBU Piranha Plant Costume 1",url:"blob:null/2a3b1569-103a-4861-8d2e-f6ebac297a65",bitmapResolution:2,rotationCenterX:126,rotationCenterY:124},{name:"NSMBU Piranha Plant Costume 2",url:"blob:null/971f3566-f24a-495f-abfb-227a6c0e96ca",bitmapResolution:2,rotationCenterX:128,rotationCenterY:128},{name:"NSMBU Piranha Plant Costume 3",url:"blob:null/9a60358d-c708-461c-9c59-f80d835cab36",bitmapResolution:2,rotationCenterX:126,rotationCenterY:136},{name:"NSMBU Piranha Plant Costume 4",url:"blob:null/35eecca2-4fc9-4d76-b93b-8ef92bdcb054",bitmapResolution:2,rotationCenterX:124,rotationCenterY:144},{name:"NSMBU Piranha Plant Costume 6",url:"blob:null/17a47b29-4179-4ffa-aaa8-d08428590f45",bitmapResolution:2,rotationCenterX:124,rotationCenterY:152},{name:"NSMBU Piranha Plant Costume 7",url:"blob:null/0992ae4c-7097-4f72-899a-6ea8aa1d28c9",bitmapResolution:2,rotationCenterX:122,rotationCenterY:156},{name:"NSMBU Piranha Plant Costume 8",url:"blob:null/a759b2f1-a191-4f58-926f-94245e1958e6",bitmapResolution:2,rotationCenterX:120,rotationCenterY:156},{name:"NSMBU Piranha Plant Costume 9",url:"blob:null/6ec74a97-5824-4fde-8fcd-890e22966820",bitmapResolution:2,rotationCenterX:118,rotationCenterY:154},{name:"NSMBU Piranha Plant Costume 10",url:"blob:null/196d82fc-59b7-4a61-8fb2-4863132da3ad",bitmapResolution:2,rotationCenterX:116,rotationCenterY:152},{name:"NSMBU Piranha Plant Costume 11",url:"blob:null/4540dfeb-479a-48c2-8539-73ad6bbe3469",bitmapResolution:2,rotationCenterX:114,rotationCenterY:144},{name:"NSMBU Piranha Plant Costume 12",url:"blob:null/e186347b-7090-45d5-bba1-03c438ba5e80",bitmapResolution:2,rotationCenterX:112,rotationCenterY:134},{name:"NSMBU Piranha Plant Costume 13",url:"blob:null/b2c38aa8-4331-4488-bcc0-943f6137550a",bitmapResolution:2,rotationCenterX:110,rotationCenterY:126},{name:"NSMBU Piranha Plant Costume 14",url:"blob:null/775b5199-9685-4e1f-aeb6-7ac7a23ed904",bitmapResolution:2,rotationCenterX:108,rotationCenterY:124},{name:"NSMBU Piranha Plant Costume 16",url:"blob:null/d1c44ce5-f5b9-4519-be0f-f531daee2a30",bitmapResolution:2,rotationCenterX:106,rotationCenterY:128},{name:"NSMBU Piranha Plant Costume 15",url:"blob:null/3e1f05e2-1bae-4e3b-8053-cefa91e10bb2",bitmapResolution:2,rotationCenterX:104,rotationCenterY:136},{name:"NSMBU Piranha Plant Costume 18",url:"blob:null/700f7ce0-973f-4103-8000-450e83765e8d",bitmapResolution:2,rotationCenterX:102,rotationCenterY:144},{name:"NSMBU Piranha Plant Costume 5",url:"blob:null/a3010eed-28a9-4898-b5c6-5abcbee68044",bitmapResolution:2,rotationCenterX:102,rotationCenterY:152},{name:"NSMBU Piranha Plant Costume 17",url:"blob:null/1373631c-eeaa-4854-8535-b46e5c95d1bb",bitmapResolution:2,rotationCenterX:100,rotationCenterY:154},{name:"NSMBU Piranha Plant Costume 19",url:"blob:null/99dc00be-d9e6-4326-a64d-4dd93150f468",bitmapResolution:2,rotationCenterX:104,rotationCenterY:156},{name:"NSMBU Piranha Plant Costume 20",url:"blob:null/2c9a3692-badb-4a95-a364-c49c09654df6",bitmapResolution:2,rotationCenterX:104,rotationCenterY:154},{name:"NSMBU Piranha Plant Costume 21",url:"blob:null/8af3694f-08dc-4b84-bf68-dd6a5d1899f2",bitmapResolution:2,rotationCenterX:104,rotationCenterY:152},{name:"NSMBU Piranha Plant Costume 22",url:"blob:null/cf624e41-cd8e-45bd-86b8-cca8bd77ac69",bitmapResolution:2,rotationCenterX:106,rotationCenterY:144},{name:"NSMBU Piranha Plant Costume 23",url:"blob:null/a1330fdf-f9a3-496f-b1da-c597855740ae",bitmapResolution:2,rotationCenterX:106,rotationCenterY:134},{name:"NSMBU Piranha Plant Costume 24",url:"blob:null/18b3f199-38b5-432c-bfde-2e1043617d49",bitmapResolution:2,rotationCenterX:110,rotationCenterY:126},{name:"NSMBU Piranha Plant Costume 25",url:"blob:null/66cb9bf3-e5b4-41b0-824f-68828077c81a",bitmapResolution:2,rotationCenterX:110,rotationCenterY:122},{name:"NSMBU Piranha Plant Costume 26",url:"blob:null/70982c55-7c61-4b71-9513-cefb1980342a",bitmapResolution:2,rotationCenterX:112,rotationCenterY:126},{name:"NSMBU Piranha Plant Costume 27",url:"blob:null/ce2f7935-2bae-4f3b-93ed-5bef688f1cf8",bitmapResolution:2,rotationCenterX:116,rotationCenterY:134},{name:"NSMBU Piranha Plant Costume 28",url:"blob:null/5f22d029-f218-4c4e-9f38-5345cd644f80",bitmapResolution:2,rotationCenterX:116,rotationCenterY:144},{name:"NSMBU Piranha Plant Costume 29",url:"blob:null/75425c36-0eec-4821-add0-7fe8ddf4c293",bitmapResolution:2,rotationCenterX:118,rotationCenterY:150},{name:"NSMBU Piranha Plant Costume 30",url:"blob:null/d0772f21-347d-4e57-ae1f-2f6cbd93dfaf",bitmapResolution:2,rotationCenterX:122,rotationCenterY:154},{name:"NSMBU Piranha Plant Costume 31",url:"blob:null/928050d5-95db-4c54-b9a6-8a9dd0b6389c",bitmapResolution:2,rotationCenterX:122,rotationCenterY:154},{name:"NSMBU Piranha Plant Costume 32",url:"blob:null/c2d46301-2055-4bce-842f-2759e08729e8",bitmapResolution:2,rotationCenterX:122,rotationCenterY:154},{name:"NSMBU Piranha Plant Costume 33",url:"blob:null/e8efa8a1-2e86-4317-a3de-b8cb531952a1",bitmapResolution:2,rotationCenterX:124,rotationCenterY:150},{name:"NSMBU Piranha Plant Costume 34",url:"blob:null/40935179-8def-4dc3-a931-d504dd956baa",bitmapResolution:2,rotationCenterX:124,rotationCenterY:144},{name:"NSMBU Pirahna Plant",url:"blob:null/07f2327d-f7ff-49b5-9a00-47d2457ef3f4",bitmapResolution:2,rotationCenterX:124,rotationCenterY:134},{name:"NSMBU Pirahna Plant2",url:"blob:null/68c45dcf-8029-407c-ac0b-6f0ae8899c55",bitmapResolution:2,rotationCenterX:124,rotationCenterY:126},{name:"NSMBU Pirahna Plant3",url:"blob:null/b28b3056-66b8-4186-bb4c-1e8af3fc2101",bitmapResolution:2,rotationCenterX:124,rotationCenterY:124},{name:"NSMBU Pirahna Plant4",url:"blob:null/805cf583-66aa-4e87-9886-ee307a85c498",bitmapResolution:2,rotationCenterX:126,rotationCenterY:128},{name:"NSMBU Pirahna Plant5",url:"blob:null/c7ad1a21-8b3f-4de6-89a9-5dd959a40fa4",bitmapResolution:2,rotationCenterX:124,rotationCenterY:136},{name:"NSMBU Pirahna Plant6",url:"blob:null/0400971d-6aeb-468e-9d17-397e1de84c3a",bitmapResolution:2,rotationCenterX:124,rotationCenterY:144},{name:"NSMBU Pirahna Plant7",url:"blob:null/3eb71460-c4f5-4999-8d7c-72072aa54df5",bitmapResolution:2,rotationCenterX:122,rotationCenterY:152},{name:"NSMBU Pirahna Plant8",url:"blob:null/2403effc-3ce0-4d4d-8b89-946a58c0084c",bitmapResolution:2,rotationCenterX:120,rotationCenterY:156},{name:"NSMBU Pirahna Plant9",url:"blob:null/af076000-4070-4a3a-97e2-7ef9a31a59db",bitmapResolution:2,rotationCenterX:120,rotationCenterY:156},{name:"NSMBU Pirahna Plant10",url:"blob:null/2a8435d5-76e2-4f8d-8855-602fa812db80",bitmapResolution:2,rotationCenterX:118,rotationCenterY:154},{name:"NSMBU Pirahna Plant11",url:"blob:null/8b8482ea-3f56-489e-809f-491acbf45c79",bitmapResolution:2,rotationCenterX:116,rotationCenterY:152},{name:"NSMBU Pirahna Plant12",url:"blob:null/92962480-c004-4dac-8864-340287d9ce3e",bitmapResolution:2,rotationCenterX:112,rotationCenterY:144},{name:"NSMBU Pirahna Plant13",url:"blob:null/79fe90c6-1986-46fc-92f4-7fec66471ac1",bitmapResolution:2,rotationCenterX:110,rotationCenterY:134},{name:"NSMBU Pirahna Plant14",url:"blob:null/32f9feb8-3aac-47c9-b794-22585ee0b511",bitmapResolution:2,rotationCenterX:106,rotationCenterY:126},{name:"NSMBU Pirahna Plant15",url:"blob:null/1fe42bcb-2959-4f94-9a2a-43a9ae5bd079",bitmapResolution:2,rotationCenterX:106,rotationCenterY:124},{name:"NSMBU Pirahna Plant16",url:"blob:null/2af0a382-c1fd-47f9-9f7d-a9d8e39412c2",bitmapResolution:2,rotationCenterX:104,rotationCenterY:126},{name:"NSMBU Pirahna Plant17",url:"blob:null/2490a829-5a2e-4d30-aa9d-66c555d01b0e",bitmapResolution:2,rotationCenterX:102,rotationCenterY:136},{name:"NSMBU Pirahna Plant18",url:"blob:null/65a38619-133a-489e-aa03-1b89c2641022",bitmapResolution:2,rotationCenterX:100,rotationCenterY:144},{name:"NSMBU Pirahna Plant19",url:"blob:null/f93b60b2-0f4d-456c-966d-36be26bafa1e",bitmapResolution:2,rotationCenterX:100,rotationCenterY:152},{name:"NSMBU Pirahna Plant20",url:"blob:null/55246119-e8e4-4e84-b3d4-8bd511ec2d3c",bitmapResolution:2,rotationCenterX:100,rotationCenterY:156},{name:"NSMBU Pirahna Plant21",url:"blob:null/ca5dd1fb-b259-4930-a004-47e18259eb30",bitmapResolution:2,rotationCenterX:100,rotationCenterY:156},{name:"NSMBU Pirahna Plant22",url:"blob:null/c69f9279-374e-4656-a25a-dc5e8e768063",bitmapResolution:2,rotationCenterX:102,rotationCenterY:154},{name:"NSMBU Pirahna Plant23",url:"blob:null/5471a2f7-6041-4022-9dd5-2619d1ca5105",bitmapResolution:2,rotationCenterX:104,rotationCenterY:152},{name:"NSMBU Pirahna Plant24",url:"blob:null/20350575-ad78-4479-b1a2-7db710c71d0c",bitmapResolution:2,rotationCenterX:104,rotationCenterY:144},{name:"NSMBU Pirahna Plant25",url:"blob:null/a9b841ac-7103-4065-8a8b-75387d1deb61",bitmapResolution:2,rotationCenterX:106,rotationCenterY:134},{name:"NSMBU Pirahna Plant26",url:"blob:null/0941ce96-321b-4088-939e-8298742cdef3",bitmapResolution:2,rotationCenterX:110,rotationCenterY:126},{name:"NSMBU Pirahna Plant27",url:"blob:null/1e18a95b-e338-4d3e-a954-d75fd764d76d",bitmapResolution:2,rotationCenterX:110,rotationCenterY:122},{name:"NSMBU Pirahna Plant28",url:"blob:null/5f52333d-96a4-4e3d-aa19-336d84b00fc3",bitmapResolution:2,rotationCenterX:112,rotationCenterY:126},{name:"NSMBU Pirahna Plant29",url:"blob:null/f58182c5-531b-4b24-953d-9a824d566516",bitmapResolution:2,rotationCenterX:116,rotationCenterY:134},{name:"NSMBU Pirahna Plant30",url:"blob:null/26231e0b-109f-4274-bd5a-91f9ee1bccfe",bitmapResolution:2,rotationCenterX:116,rotationCenterY:144},{name:"NSMBU Pirahna Plant31",url:"blob:null/ff6de667-09e2-4fbe-907f-4773e0d133fe",bitmapResolution:2,rotationCenterX:118,rotationCenterY:150},{name:"NSMBU Pirahna Plant32",url:"blob:null/b9393b4d-cf42-4068-b9a6-5da113a81259",bitmapResolution:2,rotationCenterX:122,rotationCenterY:154},{name:"NSMBU Pirahna Plant33",url:"blob:null/468aef50-3e6f-4c68-b230-d12f9d430109",bitmapResolution:2,rotationCenterX:122,rotationCenterY:154},{name:"NSMBU Pirahna Plant34",url:"blob:null/9e2eec33-f683-491d-86ed-22ea2259535c",bitmapResolution:2,rotationCenterX:122,rotationCenterY:154},{name:"NSMBU Pirahna Plant35",url:"blob:null/b8b33cf7-ee63-44f1-879a-d0e870e340a5",bitmapResolution:2,rotationCenterX:124,rotationCenterY:150},{name:"NSMBU Pirahna Plant36",url:"blob:null/f99d78eb-0ebf-45b2-84a6-f95a125b33a9",bitmapResolution:2,rotationCenterX:126,rotationCenterY:144},{name:"NSMBU Pirahna Plant37",url:"blob:null/da509b64-3368-44d2-b8b8-7b99c94ac134",bitmapResolution:2,rotationCenterX:126,rotationCenterY:134},{name:"NSMBU Pirahna Plant38",url:"blob:null/e125b0e0-bb5e-430a-bd62-a8d3b31d670a",bitmapResolution:2,rotationCenterX:126,rotationCenterY:126}],
+      costumeIndex: 0,
+      scripts: function(sprite){  }
+    },
+{
+      name: "乌龟",
+      x: -198, y: -128,
+      direction: 90,
+      size: 50,
+      visible: false,
+      rotationStyle: "left-right",
+      costumes: [{name:"Koopa1",url:"blob:null/1bc8f427-4e0e-44cd-b369-c2bfcebcb079",bitmapResolution:1,rotationCenterX:43,rotationCenterY:68},{name:"Koopa2",url:"blob:null/b8672a79-7bc1-4594-b53c-f67e5d8bd797",bitmapResolution:1,rotationCenterX:45,rotationCenterY:70},{name:"Koopa3",url:"blob:null/f9c7df02-891c-4005-b9ae-d57853ef4e66",bitmapResolution:1,rotationCenterX:49,rotationCenterY:71},{name:"Koopa4",url:"blob:null/0ffd8ce8-d6a7-4d63-b3ae-332dbd47fded",bitmapResolution:1,rotationCenterX:53,rotationCenterY:70},{name:"Koopa5",url:"blob:null/7f3cb5cd-7ad8-4a54-9a32-4afb6e80fcaf",bitmapResolution:1,rotationCenterX:56,rotationCenterY:68},{name:"Koopa6",url:"blob:null/7f93dde2-921a-4872-a189-7f2bff8c445d",bitmapResolution:1,rotationCenterX:58,rotationCenterY:67},{name:"Koopa7",url:"blob:null/6c43e252-cd04-4fad-a39e-29ba80ad8ab0",bitmapResolution:1,rotationCenterX:59,rotationCenterY:66},{name:"Koopa8",url:"blob:null/5a4f0472-bfc4-4277-8e42-8210880171b7",bitmapResolution:1,rotationCenterX:58,rotationCenterY:67},{name:"Koopa9",url:"blob:null/06497dee-df55-4631-b767-dc0aec40dfae",bitmapResolution:1,rotationCenterX:55,rotationCenterY:68},{name:"Koopa10",url:"blob:null/be23a345-2810-4f38-8477-b4d08389f3d7",bitmapResolution:1,rotationCenterX:53,rotationCenterY:68},{name:"Koopa11",url:"blob:null/1e597f59-06d3-4ba4-aaaa-b1507f57301a",bitmapResolution:1,rotationCenterX:53,rotationCenterY:68},{name:"Koopa12",url:"blob:null/d520b26e-226b-4a4d-b238-c549e0bc5a0c",bitmapResolution:1,rotationCenterX:51,rotationCenterY:69},{name:"Koopa13",url:"blob:null/e0adcbe3-3918-4764-96b3-a37d930ff32e",bitmapResolution:1,rotationCenterX:51,rotationCenterY:69},{name:"Koopa14",url:"blob:null/c4bb71c8-1f97-4ffe-bb18-b857f12af148",bitmapResolution:1,rotationCenterX:49,rotationCenterY:68},{name:"Koopa15",url:"blob:null/01b6dacb-e9bc-4f43-a45d-9c48afcdc8fc",bitmapResolution:1,rotationCenterX:49,rotationCenterY:68},{name:"Koopa16",url:"blob:null/a8447c53-d3f6-41db-ab91-b1e419000b80",bitmapResolution:1,rotationCenterX:48,rotationCenterY:67},{name:"Koopa17",url:"blob:null/20502c3b-60d2-47f6-8078-76b98cd20b4e",bitmapResolution:1,rotationCenterX:48,rotationCenterY:66},{name:"Koopa18",url:"blob:null/b84b1873-2d53-468a-9d67-486d4d155906",bitmapResolution:1,rotationCenterX:46,rotationCenterY:66},{name:"Koopa19",url:"blob:null/ee4252fc-15bd-4495-810b-d7b9835e516a",bitmapResolution:1,rotationCenterX:44,rotationCenterY:67},{name:"Koopa20",url:"blob:null/0e27ea0a-25dd-4da9-a977-76c2604ed119",bitmapResolution:1,rotationCenterX:43,rotationCenterY:68},{name:"Shell1",url:"blob:null/9585b6fa-5567-4a8e-a128-877e6c1db294",bitmapResolution:1,rotationCenterX:40,rotationCenterY:8},{name:"Shell2",url:"blob:null/99ecd74f-a56b-4d8c-ae71-6b25b146e96f",bitmapResolution:1,rotationCenterX:40,rotationCenterY:8},{name:"Shell3",url:"blob:null/4abd4c25-7c8e-4632-8918-3562255fec08",bitmapResolution:1,rotationCenterX:42,rotationCenterY:9},{name:"Shell4",url:"blob:null/1d8ad500-2f63-4d0a-990f-cc2fc8494da1",bitmapResolution:1,rotationCenterX:42,rotationCenterY:7},{name:"Shell5",url:"blob:null/2030e732-2454-4dbc-9310-f1a9ddc1f7f0",bitmapResolution:1,rotationCenterX:43,rotationCenterY:7},{name:"Shell6",url:"blob:null/aa0d11a0-77f0-4523-8e7d-926c77850dd2",bitmapResolution:1,rotationCenterX:44,rotationCenterY:8}],
+      costumeIndex: 0,
+      scripts: function(sprite){  }
+    },
+{
+      name: "boss",
+      x: 164, y: 137,
+      direction: -90,
+      size: 200,
+      visible: false,
+      rotationStyle: "left-right",
+      costumes: [{name:"开火1",url:"blob:null/6ffc53f5-6c70-4f96-97f7-549ea79ff568",bitmapResolution:2,rotationCenterX:39,rotationCenterY:43},{name:"开火2",url:"blob:null/3e2eeaa1-eab4-4da9-958e-344e758abaf4",bitmapResolution:2,rotationCenterX:39,rotationCenterY:41},{name:"开火3",url:"blob:null/c05e8d40-0b27-497a-9c5c-952f54911618",bitmapResolution:2,rotationCenterX:40,rotationCenterY:43},{name:"开火4",url:"blob:null/edb3b7fa-8cd0-4aa1-a533-d202055f4588",bitmapResolution:2,rotationCenterX:38,rotationCenterY:44},{name:"开火5",url:"blob:null/edb3b7fa-8cd0-4aa1-a533-d202055f4588",bitmapResolution:2,rotationCenterX:38,rotationCenterY:44},{name:"开火6",url:"blob:null/8b662f13-09d5-4958-90eb-633ed670292d",bitmapResolution:2,rotationCenterX:39,rotationCenterY:43},{name:"大招1",url:"blob:null/7bc2bbb4-9fc1-49c8-8ef9-168c2c450484",bitmapResolution:2,rotationCenterX:39,rotationCenterY:43},{name:"大招2",url:"blob:null/e100975b-1db0-4813-9901-92935026835f",bitmapResolution:2,rotationCenterX:39,rotationCenterY:43},{name:"大招3",url:"blob:null/e3505379-a1b7-438c-aa1a-8ef82f7e131e",bitmapResolution:2,rotationCenterX:44,rotationCenterY:44},{name:"大招4",url:"blob:null/d8ea2930-63d0-4038-beaf-3842e124c4d6",bitmapResolution:2,rotationCenterX:39,rotationCenterY:41},{name:"走1",url:"blob:null/0863ba24-5471-4aaa-8457-04175a3d567c",bitmapResolution:2,rotationCenterX:37,rotationCenterY:46},{name:"走2",url:"blob:null/299ee46d-05ed-478c-857e-586fe621ff82",bitmapResolution:2,rotationCenterX:38,rotationCenterY:44},{name:"走3",url:"blob:null/c8bcbbfb-ce1b-4660-94e7-8adb910e38d3",bitmapResolution:2,rotationCenterX:37,rotationCenterY:46},{name:"走4",url:"blob:null/8d3d566f-598d-4e51-9989-1208467cad9b",bitmapResolution:2,rotationCenterX:38,rotationCenterY:44}],
+      costumeIndex: 11,
+      scripts: function(sprite){ sprite.on('flag', async function(){setVar("boss血量","100");
+setVar("boss无敌","1");
+sprite.size=Number("200");
+sprite.visible=false;
+await wait(Number("1"));
+sprite.switchCostume(0);
+while(!((String(getVar("地图x")).toLowerCase() === String("5280").toLowerCase()))){await tick();}
+sprite.x=Number("164");sprite.y=Number("170");
+sprite.visible=true;
+while(running){await tick();}});
+sprite.on('flag', async function(){sprite.rotationStyle="left-right";
+await wait(Number("1"));
+setVar("大招","0");
+setVar("克隆","0");
+while(!((String(getVar("地图x")).toLowerCase() === String("5280").toLowerCase()))){await tick();}
+sprite.direction=Number("-90");
+await wait(Number("3"));
+for(let _i=0;_i<Number("100");_i++){sprite.effects["COLOR"]=(sprite.effects["COLOR"]||0)+Number("1");
+sprite.size+=Number("1");await tick();}
+for(let _i=0;_i<Number("100");_i++){sprite.effects["COLOR"]=(sprite.effects["COLOR"]||0)+Number("-1");
+sprite.size+=Number("-1");await tick();}
+setVar("boss无敌","0");
+while(running){for(let _i=0;_i<Number("6");_i++){await wait(Number("1"));await tick();}
+for(let _i=0;_i<Number("6");_i++){setVar("跳y","22");
+await wait(Number("1.5"));await tick();}
+setVar("克隆","1");
+for(let _i=0;_i<Number("3");_i++){for(let _i=0;_i<Number("12");_i++){sprite.direction=Number("-90");
+sprite.move("30");await tick();}
+for(let _i=0;_i<Number("12");_i++){sprite.direction=Number("90");
+sprite.move("30");await tick();}await tick();}
+setVar("克隆","0");
+sprite.direction=Number("-90");
+for(let _i=0;_i<Number("3");_i++){setVar("大招","1");
+await wait(Number("1"));
+setVar("大招","0");
+await wait(Number("1"));await tick();}await tick();}});
+sprite.on('clone', async function(){for(let _i=0;_i<Number("10");_i++){sprite.effects["GHOST"]=(sprite.effects["GHOST"]||0)+Number("10");await tick();}});
+sprite.on('flag', async function(){while(running){if((String(getVar("克隆")).toLowerCase() === String("1").toLowerCase())){}await tick();}});
+sprite.on('flag', async function(){while(running){if(((String(getVar("boss无敌")).toLowerCase() === String("0").toLowerCase()) && isTouching(sprite,0))){setVar("boss血量",Number(getVar("boss血量"))+Number("-1"));}
+if((getVar("boss血量") < "0")){running=false;return;
+setVar("大招","0");
+sprite.rotationStyle="all around";
+for(let _i=0;_i<Number("50");_i++){sprite.direction=(sprite.direction+Number("30"))%360;
+sprite.effects["COLOR"]=(sprite.effects["COLOR"]||0)+Number("2");
+sprite.size+=Number("2");
+sprite.effects["GHOST"]=(sprite.effects["GHOST"]||0)+Number("-2");await tick();}
+sprite.visible=false;}await tick();}}); }
+    },
+{
+      name: "地图",
+      x: 466, y: 0,
+      direction: 90,
+      size: 100,
+      visible: false,
+      rotationStyle: "all around",
+      costumes: [{name:"costume1",url:"blob:null/74dc32d4-04ef-4940-8ec1-be76a903b719",bitmapResolution:1,rotationCenterX:292.8226364765197,rotationCenterY:-6.930485564220703},{name:"costume2",url:"blob:null/e1b9feb4-36e1-4166-a6f4-6a2602bf8089",bitmapResolution:1,rotationCenterX:243.9275063189862,rotationCenterY:-54.552750806808774},{name:"costume3",url:"blob:null/93b17e04-04db-4372-a7bd-83e10389ee06",bitmapResolution:1,rotationCenterX:243.10000000000002,rotationCenterY:-4.998712570000038},{name:"costume4",url:"blob:null/0aa3a88c-f800-403c-b0f6-90cc21947da3",bitmapResolution:1,rotationCenterX:244,rotationCenterY:-5},{name:"costume5",url:"blob:null/c73c78d3-9aae-4d3b-b47b-302a7bb2d07b",bitmapResolution:1,rotationCenterX:241.3091687729955,rotationCenterY:78},{name:"NSMBU Tile5",url:"blob:null/6fc8dd51-90da-4755-9143-230dbe2410d1",bitmapResolution:1,rotationCenterX:244.27292193248854,rotationCenterY:-99},{name:"costume6",url:"blob:null/cfa1b1f9-422f-4eb9-aca8-5f5451232977",bitmapResolution:1,rotationCenterX:240.6545843864976,rotationCenterY:-59},{name:"costume9",url:"blob:null/aa0b7d09-093f-4dfe-a42f-b6d7be40ef46",bitmapResolution:1,rotationCenterX:241.3091687729955,rotationCenterY:-58.995974268099985},{name:"costume7",url:"blob:null/e40e4e04-c7aa-486c-84bf-93204fa1b019",bitmapResolution:1,rotationCenterX:241.96375315949317,rotationCenterY:-49.96943019032477},{name:"costume10",url:"blob:null/2f0fa1b2-fcd0-4632-b529-7f1c6ce5c291",bitmapResolution:1,rotationCenterX:240.96375315949308,rotationCenterY:-49.970639466424814},{name:"costume8",url:"blob:null/87c0d1af-eea5-43f6-8640-bef4053f3a60",bitmapResolution:1,rotationCenterX:241.30916877299532,rotationCenterY:-7.004287514747716},{name:"costume11",url:"blob:null/5d4a0fa8-a701-44f4-8836-326f2eab7420",bitmapResolution:1,rotationCenterX:241.30916713789546,rotationCenterY:0.3737556202607095},{name:"costume12",url:"blob:null/87b21e73-c25b-478b-8f20-9def6467260f",bitmapResolution:1,rotationCenterX:241.30916638549547,rotationCenterY:70.82702859211604},{name:"costume22",url:"blob:null/87b21e73-c25b-478b-8f20-9def6467260f",bitmapResolution:1,rotationCenterX:241.30916638549547,rotationCenterY:70.82702859211604},{name:"costume23",url:"blob:null/87b21e73-c25b-478b-8f20-9def6467260f",bitmapResolution:1,rotationCenterX:241.30916638549547,rotationCenterY:70.82702859211604},{name:"costume21",url:"blob:null/87b21e73-c25b-478b-8f20-9def6467260f",bitmapResolution:1,rotationCenterX:241.30916638549547,rotationCenterY:70.82702859211604},{name:"costume20",url:"blob:null/87b21e73-c25b-478b-8f20-9def6467260f",bitmapResolution:1,rotationCenterX:241.30916638549547,rotationCenterY:70.82702859211604},{name:"costume19",url:"blob:null/87b21e73-c25b-478b-8f20-9def6467260f",bitmapResolution:1,rotationCenterX:241.30916638549547,rotationCenterY:70.82702859211604},{name:"costume18",url:"blob:null/87b21e73-c25b-478b-8f20-9def6467260f",bitmapResolution:1,rotationCenterX:241.30916638549547,rotationCenterY:70.82702859211604},{name:"costume17",url:"blob:null/87b21e73-c25b-478b-8f20-9def6467260f",bitmapResolution:1,rotationCenterX:241.30916638549547,rotationCenterY:70.82702859211604},{name:"costume16",url:"blob:null/87b21e73-c25b-478b-8f20-9def6467260f",bitmapResolution:1,rotationCenterX:241.30916638549547,rotationCenterY:70.82702859211604},{name:"costume15",url:"blob:null/87b21e73-c25b-478b-8f20-9def6467260f",bitmapResolution:1,rotationCenterX:241.30916638549547,rotationCenterY:70.82702859211604},{name:"costume14",url:"blob:null/87b21e73-c25b-478b-8f20-9def6467260f",bitmapResolution:1,rotationCenterX:241.30916638549547,rotationCenterY:70.82702859211604},{name:"costume13",url:"blob:null/4efec3e6-40d2-4f67-b16d-6ba81f70d3e4",bitmapResolution:1,rotationCenterX:241.30916060579548,rotationCenterY:-135.0000314078839},{name:"PIPE",url:"blob:null/ea3fa380-d3d9-4d4d-9659-458e2964b075",bitmapResolution:1,rotationCenterX:64,rotationCenterY:65},{name:"造型1",url:"blob:null/0feb5843-1589-4c0f-b196-a5dac39a470b",bitmapResolution:1,rotationCenterX:441.7567955240527,rotationCenterY:321.0300239887149}],
+      costumeIndex: 12,
+      scripts: function(sprite){ sprite.on('clone', async function(){sprite.visible=true;
+while(running){sprite.switchCostume(0);
+sprite.x=Number((getVar("x") - getVar("地图x")));sprite.y=Number("0");
+sprite.switchCostume(getVar("造型"));await tick();}});
+sprite.on('clone', async function(){while(running){if((getVar("编号") < getVar("关卡"))){}await tick();}});
+sprite.on('flag', async function(){sprite.visible=false;
+setVar("编号","1");
+setVar("造型","1");
+while(!((String(getVar("关卡")).toLowerCase() === String("2").toLowerCase()))){await tick();}
+setVar("编号","2");
+setVar("造型","13");}); }
+    },
+{
+      name: "金币",
+      x: 240, y: -89,
+      direction: 90,
+      size: 60,
+      visible: false,
+      rotationStyle: "all around",
+      costumes: [{name:"coin1",url:"blob:null/b2964513-0048-4cd6-8593-b3df241d5f18",bitmapResolution:1,rotationCenterX:17.63419651776468,rotationCenterY:18.58722148074949},{name:"coin7",url:"blob:null/b2964513-0048-4cd6-8593-b3df241d5f18",bitmapResolution:1,rotationCenterX:17.63419651776468,rotationCenterY:18.58722148074949},{name:"coin2",url:"blob:null/16138662-f952-43db-b851-d4f4ad3a1cdd",bitmapResolution:1,rotationCenterX:14.01153276952195,rotationCenterY:18.587234807494838},{name:"coin8",url:"blob:null/16138662-f952-43db-b851-d4f4ad3a1cdd",bitmapResolution:1,rotationCenterX:14.01153276952195,rotationCenterY:18.587234807494838},{name:"coin3",url:"blob:null/5ac93fc2-9494-4c75-835a-2e708571f3a5",bitmapResolution:1,rotationCenterX:7.6841713691653695,rotationCenterY:18.771304327659777},{name:"coin9",url:"blob:null/5ac93fc2-9494-4c75-835a-2e708571f3a5",bitmapResolution:1,rotationCenterX:7.6841713691653695,rotationCenterY:18.771304327659777},{name:"coin4",url:"blob:null/a83a5a5a-54a8-4d22-9c35-f7d8b9dfb34f",bitmapResolution:1,rotationCenterX:3.6604719734709192,rotationCenterY:18.612901480749485},{name:"coin10",url:"blob:null/a83a5a5a-54a8-4d22-9c35-f7d8b9dfb34f",bitmapResolution:1,rotationCenterX:3.6604719734709192,rotationCenterY:18.612901480749485},{name:"coin5",url:"blob:null/0da54f55-e45d-4f60-a7c0-ca1d4f772d3f",bitmapResolution:1,rotationCenterX:11.184162202477921,rotationCenterY:18.771301218439817},{name:"coin11",url:"blob:null/0da54f55-e45d-4f60-a7c0-ca1d4f772d3f",bitmapResolution:1,rotationCenterX:11.184162202477921,rotationCenterY:18.771301218439817},{name:"coin6",url:"blob:null/dd18d2cd-8fc2-447e-99fc-301d6ac9def9",bitmapResolution:1,rotationCenterX:17.678201846691593,rotationCenterY:18.587231480749466},{name:"coin12",url:"blob:null/dd18d2cd-8fc2-447e-99fc-301d6ac9def9",bitmapResolution:1,rotationCenterX:17.678201846691593,rotationCenterY:18.587231480749466},{name:"coin end",url:"blob:null/107a00d7-6e42-407e-878e-5911460e7306",bitmapResolution:1,rotationCenterX:18.724085849936642,rotationCenterY:24.62535915982923}],
+      costumeIndex: 0,
+      scripts: function(sprite){ sprite.on('clone', async function(){while(running){sprite.x=Number((getVar("x") - getVar("地图x")));sprite.y=Number(getVar("y"));
+if(((sprite.x > "238") || (sprite.x < "-238"))){sprite.visible=false;}else{sprite.visible=true;}await tick();}});
+sprite.on('clone', async function(){while(running&&!(isTouching(sprite,0))){sprite.costumeIndex=(sprite.costumeIndex+1)%sprite.costumes.length;
+if((String(sprite.costumeIndex+1).toLowerCase() === String("12").toLowerCase())){sprite.switchCostume(0);}await tick();}
+sprite.switchCostume(0);
+for(let _i=0;_i<Number("10");_i++){setVar("y",Number(getVar("y"))+Number("5"));await tick();}
+setVar("金币",Number(getVar("金币"))+Number("1"));});
+sprite.on('flag', async function(){sprite.visible=false;
+setVar("遍历","1");
+setVar("编号","1");
+setVar("造型","1");
+for(let _i=0;_i<Number("30");_i++){setVar("x",0);
+setVar("y",0);
+setVar("遍历",Number(getVar("遍历"))+Number("1"));await tick();}
+while(!((String(getVar("关卡")).toLowerCase() === String("2").toLowerCase()))){await tick();}
+setVar("编号","2");});
+sprite.on('clone', async function(){while(running){if((getVar("编号") < getVar("关卡"))){}await tick();}}); }
+    },
+{
+      name: "蘑菇",
+      x: 240, y: -118,
+      direction: 90,
+      size: 60,
+      visible: false,
+      rotationStyle: "don't rotate",
+      costumes: [{name:"1",url:"blob:null/f65bec3c-dc27-4ffe-a7af-b91822eea594",bitmapResolution:1,rotationCenterX:24.957515,rotationCenterY:24.381010293267764},{name:"2",url:"blob:null/a4327093-3a8f-4f89-9909-63ec61645b30",bitmapResolution:1,rotationCenterX:24.95751500000003,rotationCenterY:24.38100793990162},{name:"3",url:"blob:null/c4218df9-7c1e-42f9-88af-03556280dd53",bitmapResolution:1,rotationCenterX:23.647981666666766,rotationCenterY:27.381001466338773},{name:"4",url:"blob:null/cf9d47a8-c5f0-4851-a10a-2b930be77645",bitmapResolution:1,rotationCenterX:23.64797999999999,rotationCenterY:27.38099764663386},{name:"5",url:"blob:null/01ae7403-b5c9-4a57-8fa0-0bd728dd0bb4",bitmapResolution:1,rotationCenterX:23.647980000000075,rotationCenterY:28.38099087980322},{name:"6",url:"blob:null/01ae7403-b5c9-4a57-8fa0-0bd728dd0bb4",bitmapResolution:1,rotationCenterX:23.647980000000075,rotationCenterY:28.38099087980322},{name:"7",url:"blob:null/01d84b72-742c-407d-920c-5b6753f7fc06",bitmapResolution:1,rotationCenterX:23.647980000000047,rotationCenterY:29.381002939901606},{name:"8",url:"blob:null/01d84b72-742c-407d-920c-5b6753f7fc06",bitmapResolution:1,rotationCenterX:23.647980000000047,rotationCenterY:29.381002939901606},{name:"9",url:"blob:null/db5385ac-43bd-4886-a5f5-ff0a5caf75b6",bitmapResolution:1,rotationCenterX:23.647980000000075,rotationCenterY:25.381005586535508},{name:"10",url:"blob:null/ec06b1ef-912c-436d-a5e2-fc1e9426899a",bitmapResolution:1,rotationCenterX:24.957555000000013,rotationCenterY:14.666727880051667},{name:"11",url:"blob:null/a26909f5-21ee-460d-90af-ebc0350ffa41",bitmapResolution:1,rotationCenterX:27.627011742447678,rotationCenterY:2.000084070464453},{name:"12",url:"blob:null/1ec36221-cbc0-4296-b8ba-38cb3c3b3618",bitmapResolution:1,rotationCenterX:30.29646848489537,rotationCenterY:-9.249902339357533},{name:"13",url:"blob:null/4ec17993-6123-4a92-8066-8e1480da0a11",bitmapResolution:1,rotationCenterX:32.96593522734307,rotationCenterY:-18.999867685004375},{name:"造型1",url:"blob:null/25309ee9-303a-4d91-9866-cf0de119d6d6",bitmapResolution:1,rotationCenterX:30.90625,rotationCenterY:19.93437499999999}],
+      costumeIndex: 0,
+      scripts: function(sprite){ sprite.on('clone', async function(){while(running){sprite.x=Number((getVar("x") - getVar("地图x")));sprite.y=Number(getVar("y"));
+if(((sprite.x > "238") || (sprite.x < "-238"))){sprite.visible=false;}else{sprite.visible=true;}await tick();}});
+sprite.on('clone', async function(){while(running){while(running&&!((getVar("x") < getVar("左")))){sprite.direction=Number("-90");
+setVar("x",Number(getVar("x"))+Number("-2"));await tick();}
+while(running&&!((getVar("x") > getVar("右")))){sprite.direction=Number("90");
+setVar("x",Number(getVar("x"))+Number("2"));await tick();}await tick();}});
+sprite.on('clone', async function(){sprite.switchCostume(0);
+while(running&&!(((isTouching(sprite,0) && (sprite.y < (0 - "15"))) || isTouching(sprite,0)))){sprite.costumeIndex=(sprite.costumeIndex+1)%sprite.costumes.length;
+if((String(sprite.costumeIndex+1).toLowerCase() === String("8").toLowerCase())){sprite.switchCostume(0);}await tick();}});
+sprite.on('clone', async function(){while(running){if(isTouching(sprite,0)){if((sprite.y < (0 - "15"))){sprite.switchCostume(0);
+for(let _i=0;_i<Number("4");_i++){sprite.costumeIndex=(sprite.costumeIndex+1)%sprite.costumes.length;await tick();}
+sprite.switchCostume(0);
+for(let _i=0;_i<Number("10");_i++){setVar("y",Number(getVar("y"))+Number("5"));await tick();}
+setVar("积分",Number(getVar("积分"))+Number("200"));}else{}}await tick();}});
+sprite.on('clone', async function(){while(running){if(isTouching(sprite,0)){await wait(Number("0.02"));
+setVar("积分",Number(getVar("积分"))+Number("200"));
+sprite.switchCostume(0);
+await wait(Number("0.2"));}await tick();}});
+sprite.on('clone', async function(){while(running){if((isTouching(sprite,0) && (String(getVar("物品")).toLowerCase() === String("1").toLowerCase()))){sprite.switchCostume(0);
+setVar("积分",Number(getVar("积分"))+Number("200"));}await tick();}});
+sprite.on('flag', async function(){sprite.visible=false;
+setVar("编号","1");
+for(let _i=0;_i<Number("6");_i++){setVar("n","1");
+for(let _i=0;_i<Number("5");_i++){setVar("x",0);
+setVar("y",0);
+setVar("右",0);
+setVar("左",0);
+setVar("n",Number(getVar("n"))+Number("1"));await tick();}
+await wait(Number("3"));await tick();}
+while(!((String(getVar("关卡")).toLowerCase() === String("2").toLowerCase()))){await tick();}
+setVar("编号","2");});
+sprite.on('clone', async function(){while(running){if((getVar("编号") < getVar("关卡"))){}await tick();}}); }
+    },
+{
+      name: "盒子",
+      x: 247, y: 0,
+      direction: 90,
+      size: 35,
+      visible: false,
+      rotationStyle: "all around",
+      costumes: [{name:"A",url:"blob:null/77a3d50b-8278-4c41-92db-2c5be1560d68",bitmapResolution:2,rotationCenterX:128,rotationCenterY:128},{name:"B",url:"blob:null/a3a255d7-a722-4cd3-bbda-331914019d4d",bitmapResolution:1,rotationCenterX:64,rotationCenterY:64},{name:"造型1",url:"blob:null/e44bc00c-c444-494a-9b1b-b17f45a72571",bitmapResolution:1,rotationCenterX:548.5480480480483,rotationCenterY:429.1599877886184}],
+      costumeIndex: 0,
+      scripts: function(sprite){ sprite.on('clone', async function(){sprite.visible=true;
+while(running){sprite.switchCostume(0);
+sprite.x=Number((getVar("x") - getVar("地图x")));sprite.y=Number(getVar("y"));
+sprite.switchCostume(getVar("造型"));await tick();}});
+sprite.on('clone', async function(){while(running){if(isTouching(sprite,0)){for(let _i=0;_i<Number("3");_i++){setVar("y",Number(getVar("y"))+Number("7"));await tick();}
+setVar("造型","2");
+for(let _i=0;_i<Number("3");_i++){setVar("y",Number(getVar("y"))+Number("-7"));await tick();}}await tick();}});
+sprite.on('flag', async function(){sprite.visible=false;
+setVar("编号","1");
+setVar("造型","1");
+while(!((String(getVar("关卡")).toLowerCase() === String("2").toLowerCase()))){await tick();}
+setVar("编号","2");
+setVar("造型","1");});
+sprite.on('clone', async function(){sprite.visible=true;
+while(running){if((getVar("编号") < getVar("关卡"))){}await tick();}}); }
+    },
+{
+      name: "道具",
+      x: 282, y: 0,
+      direction: 88.2862531696261,
+      size: 60,
+      visible: false,
+      rotationStyle: "left-right",
+      costumes: [{name:"枪",url:"blob:null/a2c21f08-33e1-4e17-8b54-f92874c8efd4",bitmapResolution:1,rotationCenterX:35.424465306722794,rotationCenterY:46.30025405835602},{name:"飞机",url:"blob:null/683393c1-7a01-4493-b077-a13ed5bd18e1",bitmapResolution:1,rotationCenterX:33.79605445410215,rotationCenterY:49.43803338336147},{name:"TK",url:"blob:null/4de87c25-5e38-43e6-aa41-2d2649c37dbd",bitmapResolution:1,rotationCenterX:32.73491000000001,rotationCenterY:23.075428360655735},{name:"金币1",url:"blob:null/b2964513-0048-4cd6-8593-b3df241d5f18",bitmapResolution:1,rotationCenterX:17.63419651776468,rotationCenterY:18.58722148074949},{name:"飞机1",url:"blob:null/2791a23c-4e57-4192-9a3e-5fbc3af4f8fe",bitmapResolution:2,rotationCenterX:193,rotationCenterY:62},{name:"枪3",url:"blob:null/e176f355-e08d-48a8-b3f5-ce2f37b39c3c",bitmapResolution:2,rotationCenterX:58,rotationCenterY:4},{name:"TK2",url:"blob:null/9f4661d2-1e39-487d-95a2-39cdbdbf5758",bitmapResolution:1,rotationCenterX:43.67769364440858,rotationCenterY:10.699941753821463},{name:"造型1",url:"blob:null/fa39d762-ee28-4c9d-9c9d-b86b8979ab23",bitmapResolution:1,rotationCenterX:412.9129129129128,rotationCenterY:307.807807807808}],
+      costumeIndex: 4,
+      scripts: function(sprite){ sprite.on('flag', async function(){});
+sprite.on('clone', async function(){sprite.visible=true;
+sprite.effects["GHOST"]=Number("100");
+while(running){sprite.switchCostume(0);
+sprite.x=Number((getVar("x") - getVar("地图x")));sprite.y=Number(getVar("y"));
+sprite.switchCostume(getVar("造型"));await tick();}});
+sprite.on('clone', async function(){setVar("激活","0");
+while(running){if(((String(getVar("造型")).toLowerCase() === String("4").toLowerCase()) && isTouching(sprite,0))){sprite.effects["GHOST"]=Number("0");
+for(let _i=0;_i<Number("10");_i++){setVar("y",Number(getVar("y"))+Number("5"));
+sprite.effects["GHOST"]=(sprite.effects["GHOST"]||0)+Number("5");await tick();}
+setVar("金币",Number(getVar("金币"))+Number("1"));}
+if(((String(getVar("造型")).toLowerCase() === String("1").toLowerCase()) && isTouching(sprite,0))){setVar("激活","1");
+for(let _i=0;_i<Number("10");_i++){sprite.effects["GHOST"]=(sprite.effects["GHOST"]||0)+Number("-10");await tick();}}
+if(((String(getVar("造型")).toLowerCase() === String("2").toLowerCase()) && isTouching(sprite,0))){setVar("激活","2");
+for(let _i=0;_i<Number("10");_i++){sprite.effects["GHOST"]=(sprite.effects["GHOST"]||0)+Number("-10");await tick();}}
+if(((String(getVar("造型")).toLowerCase() === String("3").toLowerCase()) && isTouching(sprite,0))){setVar("激活","3");
+for(let _i=0;_i<Number("10");_i++){sprite.effects["GHOST"]=(sprite.effects["GHOST"]||0)+Number("-10");await tick();}}await tick();}});
+sprite.on('clone', async function(){while(running){if(((String(getVar("编号")).toLowerCase() === String("1").toLowerCase()) && (String(getVar("激活")).toLowerCase() === String("1").toLowerCase()))){if(isTouching(sprite,0)){while(running&&!(false)){sprite.direction=Number(0);
+if(isKeyDown(0)){setVar("造型","6");}else{setVar("造型","1");}await tick();}}}await tick();}});
+sprite.on('clone', async function(){while(running){if(((String(getVar("编号")).toLowerCase() === String("1").toLowerCase()) && (String(getVar("激活")).toLowerCase() === String("1").toLowerCase()))){if(isKeyDown(0)){}else{}}await tick();}});
+sprite.on('clone', async function(){while(running){if(((String(getVar("编号")).toLowerCase() === String("2").toLowerCase()) && ((String(getVar("激活")).toLowerCase() === String("2").toLowerCase()) && (String(getVar("物品")).toLowerCase() === String("0").toLowerCase())))){if(isTouching(sprite,0)){sprite.effects={};
+setVar("物品","1");
+while(running&&!((0 > "30"))){sprite.direction=Number(0);
+setVar("造型","5");await tick();}
+setVar("物品","0");}}await tick();}});
+sprite.on('clone', async function(){while(running){if(((String(getVar("编号")).toLowerCase() === String("3").toLowerCase()) && ((String(getVar("激活")).toLowerCase() === String("3").toLowerCase()) && (String(getVar("物品")).toLowerCase() === String("0").toLowerCase())))){if(isTouching(sprite,0)){sprite.effects={};
+setVar("物品","1");
+while(running&&!((0 > "30"))){sprite.direction=Number(0);
+setVar("造型","7");await tick();}
+setVar("物品","0");}}await tick();}});
+sprite.on('clone', async function(){while(!((isTouching(sprite,0) && (((String(getVar("编号")).toLowerCase() === String("3").toLowerCase()) && (String(getVar("激活")).toLowerCase() === String("3").toLowerCase())) && (0 > "25"))))){await tick();}
+while(running&&!((0 > "30"))){sprite.effects["COLOR"]=(sprite.effects["COLOR"]||0)+Number("10");await tick();}});
+sprite.on('clone', async function(){while(!((isTouching(sprite,0) && (((String(getVar("编号")).toLowerCase() === String("2").toLowerCase()) && (String(getVar("激活")).toLowerCase() === String("2").toLowerCase())) && (0 > "25"))))){await tick();}
+while(running&&!((0 > "30"))){sprite.effects["COLOR"]=(sprite.effects["COLOR"]||0)+Number("10");await tick();}});
+sprite.on('flag', async function(){sprite.visible=false;
+setVar("编号","1");
+setVar("物品","0");
+await wait(Number("1"));
+lists["道具库"]=[];
+for(let _i=0;_i<Number("12");_i++){{ const ln="道具库"; if(!lists[ln])lists[ln]=[]; lists[ln].push("4"); }await tick();}
+await wait(Number("0.2"));
+while(running&&!(0)){await tick();}
+await wait(Number("0.2"));
+while(running&&!(0)){await tick();}
+await wait(Number("0.2"));
+while(running&&!(0)){await tick();}
+while(!((String(getVar("关卡")).toLowerCase() === String("2").toLowerCase()))){await tick();}
+setVar("编号","2");});
+sprite.on('clone', async function(){while(running){if((getVar("编号") < getVar("关卡"))){}await tick();}}); }
+    },
+{
+      name: "终点",
+      x: 75, y: 0,
+      direction: 90,
+      size: 100,
+      visible: false,
+      rotationStyle: "all around",
+      costumes: [{name:"costume2",url:"blob:null/fec8fee2-81fa-4714-bb94-693acbdfb4ad",bitmapResolution:1,rotationCenterX:-149.71252153913053,rotationCenterY:86.99106},{name:"costume3",url:"blob:null/f6668067-b111-46b9-97c5-6df28bb39f21",bitmapResolution:1,rotationCenterX:-168.94973499999998,rotationCenterY:71.53145536553127},{name:"造型1",url:"blob:null/fa7a3bb8-27cc-415a-a5e9-4fa13fda5b98",bitmapResolution:1,rotationCenterX:414.4144144144145,rotationCenterY:362.61261261261245}],
+      costumeIndex: 0,
+      scripts: function(sprite){ sprite.on('flag', async function(){sprite.visible=false;});
+sprite.on('clone', async function(){sprite.visible=true;
+while(running){sprite.switchCostume(0);
+sprite.x=Number((getVar("x") - getVar("地图x")));sprite.y=Number(getVar("y"));
+sprite.switchCostume(getVar("造型"));await tick();}});
+sprite.on('clone', async function(){while(running){if((getVar("boss血量") < "0")){if(((String(getVar("造型")).toLowerCase() === String("2").toLowerCase()) && isTouching(sprite,0))){for(let _i=0;_i<Number("10");_i++){setVar("y",Number(getVar("y"))+Number("-15"));await tick();}
+setVar("关卡",Number(getVar("关卡"))+Number("1"));
+running=false;return;}}await tick();}}); }
+    },
+{
+      name: "封面",
+      x: 0, y: 0,
+      direction: 90,
+      size: 100,
+      visible: true,
+      rotationStyle: "all around",
+      costumes: [{name:"封面1",url:"blob:null/57a0dc86-b38d-40dd-b7c3-f533a8290907",bitmapResolution:1,rotationCenterX:387.0001684935,rotationCenterY:464.00033435480003},{name:"封面2",url:"blob:null/6bd6aeab-df40-42ab-96ed-792d5bb19dbd",bitmapResolution:2,rotationCenterX:480,rotationCenterY:360},{name:"造型1",url:"blob:null/829409cd-76f6-4c46-82f5-c7af81fdf616",bitmapResolution:1,rotationCenterX:415.75,rotationCenterY:288.25},{name:"造型2",url:"blob:null/30685583-298b-4dbe-9e69-06fd304d3aa6",bitmapResolution:1,rotationCenterX:415.75,rotationCenterY:288.25},{name:"造型3",url:"blob:null/76b89f8c-5d70-4b42-8e67-91a17a9faab3",bitmapResolution:1,rotationCenterX:465.32501,rotationCenterY:348.253125}],
+      costumeIndex: 2,
+      scripts: function(sprite){ sprite.on('flag', async function(){sprite.visible=true;
+sprite.switchCostume(0);
+sprite.effects["GHOST"]=Number("100");
+while(!((getVar("生命") < "1"))){await tick();}
+sprite.switchCostume(0);
+setVar("开关","0");
+for(let _i=0;_i<Number("20");_i++){sprite.effects["GHOST"]=(sprite.effects["GHOST"]||0)+Number("5");await tick();}
+setVar("生命","5");
+setVar("开关","1");
+running=false;return;});
+sprite.on('broadcast:重置', async function(){setVar("开关","0");
+setVar("生命",Number(getVar("生命"))+Number("-1"));
+for(let _i=0;_i<Number("40");_i++){sprite.effects["GHOST"]=(sprite.effects["GHOST"]||0)+Number("-2.5");await tick();}
+setVar("开关","1");
+for(let _i=0;_i<Number("40");_i++){sprite.effects["GHOST"]=(sprite.effects["GHOST"]||0)+Number("2.5");await tick();}});
+sprite.on('broadcast:next', async function(){sprite.effects={};
+sprite.switchCostume(0);
+for(let _i=0;_i<Number("100");_i++){sprite.effects["GHOST"]=(sprite.effects["GHOST"]||0)+Number("1");await tick();}}); }
+    },
+{
+      name: "生命包",
+      x: 0, y: 0,
+      direction: 90,
+      size: 100,
+      visible: true,
+      rotationStyle: "don't rotate",
+      costumes: [{name:"1",url:"blob:null/2b845109-ba74-47e7-b253-fa6689664ffb",bitmapResolution:1,rotationCenterX:0.5,rotationCenterY:19.5},{name:"2",url:"blob:null/cc356b07-00ee-42fe-a13b-fd709208f653",bitmapResolution:1,rotationCenterX:4.5,rotationCenterY:19.25},{name:"3",url:"blob:null/6add0097-e622-408c-b40b-610063405105",bitmapResolution:1,rotationCenterX:4.5,rotationCenterY:19.25},{name:"4",url:"blob:null/b543c810-e820-4718-a685-4b83f0b21b00",bitmapResolution:1,rotationCenterX:4.5,rotationCenterY:19.25},{name:"5",url:"blob:null/185c34e6-aa8a-459f-beb7-96d3dc048fc8",bitmapResolution:1,rotationCenterX:4.5,rotationCenterY:19.25},{name:"6",url:"blob:null/26f873b9-b5d2-4219-ae24-5c405b867e0f",bitmapResolution:1,rotationCenterX:4.5,rotationCenterY:19.25},{name:"7",url:"blob:null/a91b824e-7331-44b7-807a-639c40d9d64c",bitmapResolution:1,rotationCenterX:4.5,rotationCenterY:19.25},{name:"8",url:"blob:null/3fbd0afd-5cd8-427c-9730-d68ffef528ec",bitmapResolution:1,rotationCenterX:4.5,rotationCenterY:19.25},{name:"9",url:"blob:null/c5a23f10-8adb-4192-ba4f-5133b3cd5a78",bitmapResolution:1,rotationCenterX:4.5,rotationCenterY:19.25},{name:"0",url:"blob:null/016b0ae0-52da-42e3-98b0-05d4b8e0f1d2",bitmapResolution:1,rotationCenterX:4.5,rotationCenterY:19.25},{name:"Heart Red",url:"blob:null/745c45d4-40f6-453d-aa80-b2f1c7c5473a",bitmapResolution:1,rotationCenterX:236.63021937500002,rotationCenterY:176.8038121875},{name:"Heart Red2",url:"blob:null/7c802d27-42eb-422d-a8b2-799611f28c48",bitmapResolution:1,rotationCenterX:201.74677,rotationCenterY:168.63715}],
+      costumeIndex: 10,
+      scripts: function(sprite){ sprite.on('flag', async function(){sprite.visible=false;
+sprite.x=Number("0");sprite.y=Number("0");
+setVar("血包编号","1");
+sprite.switchCostume(0);
+for(let _i=0;_i<Number("5");_i++){setVar("血包编号",Number(getVar("血包编号"))+Number("1"));
+sprite.x+=Number("17");await tick();}
+setVar("时间编号","1");
+sprite.switchCostume(0);
+sprite.x=Number("-55");sprite.y=Number("160");
+for(let _i=0;_i<Number("3");_i++){setVar("时间编号",Number(getVar("时间编号"))+Number("1"));
+sprite.x+=Number("17");await tick();}
+setVar("金币编号","1");
+sprite.x=Number("31");sprite.y=Number("160");
+for(let _i=0;_i<Number("3");_i++){sprite.x+=Number("17");
+setVar("金币编号",Number(getVar("金币编号"))+Number("1"));await tick();}
+sprite.x=Number("142");sprite.y=Number("160");
+setVar("积分编号","1");
+for(let _i=0;_i<Number("6");_i++){sprite.x+=Number("17");
+setVar("积分编号",Number(getVar("积分编号"))+Number("1"));await tick();}
+sprite.switchCostume(0);
+sprite.x=Number("0");sprite.y=Number("0");
+sprite.visible=true;});
+sprite.on('clone', async function(){if(((getVar("血包编号") > "0") && (getVar("血包编号") < "6"))){while(running){if(((getVar("血包编号") < getVar("生命")) || (String(getVar("血包编号")).toLowerCase() === String(getVar("生命")).toLowerCase()))){sprite.visible=true;}else{sprite.visible=false;}await tick();}}});
+sprite.on('clone', async function(){if(((getVar("时间编号") > "0") && (getVar("时间编号") < "4"))){while(running){if((0 > "-1")){sprite.visible=true;}else{sprite.visible=false;}
+sprite.switchCostume(0);await tick();}}});
+sprite.on('clone', async function(){if(((getVar("金币编号") > "0") && (getVar("金币编号") < "4"))){while(running){if((0 > "-1")){sprite.visible=true;}else{sprite.visible=false;}
+sprite.switchCostume(0);await tick();}}});
+sprite.on('clone', async function(){if(((getVar("积分编号") > "0") && (getVar("积分编号") < "7"))){while(running){if((0 > "-1")){sprite.visible=true;}else{sprite.visible=false;}
+sprite.switchCostume(0);await tick();}}});
+sprite.on('flag', async function(){setVar("计时","0");
+while(running){await wait(Number("1"));
+setVar("计时",Number(getVar("计时"))+Number("1"));await tick();}}); }
+    },
+{
+      name: "天线",
+      x: 0, y: 21,
+      direction: 90,
+      size: 100,
+      visible: true,
+      rotationStyle: "all around",
+      costumes: [{name:"造型1",url:"blob:null/e7febb68-6474-4186-83ff-fe58f9cf4b60",bitmapResolution:1,rotationCenterX:0.525004069010464,rotationCenterY:26.741208308919596}],
+      costumeIndex: 0,
+      scripts: function(sprite){ sprite.on('flag', async function(){sprite.effects["GHOST"]=Number("100");
+while(running){await tick();}}); }
+    },
+{
+      name: "左",
+      x: 0, y: 20.5,
+      direction: 90,
+      size: 350,
+      visible: true,
+      rotationStyle: "left-right",
+      costumes: [{name:"小刚体",url:"blob:null/7852832f-462e-48a0-84aa-109bf3df3af4",bitmapResolution:1,rotationCenterX:8.25,rotationCenterY:4.75}],
+      costumeIndex: 0,
+      scripts: function(sprite){ sprite.on('flag', async function(){sprite.visible=true;
+sprite.effects["GHOST"]=Number("100");
+while(running){if((isTouching(sprite,0) || isTouching(sprite,0))){setVar("左","1");}else{setVar("左","0");}await tick();}}); }
+    },
+{
+      name: "右",
+      x: 0, y: 20.5,
+      direction: 90,
+      size: 350,
+      visible: true,
+      rotationStyle: "left-right",
+      costumes: [{name:"小刚体",url:"blob:null/0ff62bfa-257a-491c-996d-97f79d7bc03c",bitmapResolution:1,rotationCenterX:0,rotationCenterY:4.625}],
+      costumeIndex: 0,
+      scripts: function(sprite){ sprite.on('flag', async function(){sprite.visible=true;
+sprite.effects["GHOST"]=Number("100");
+while(running){if((isTouching(sprite,0) || isTouching(sprite,0))){setVar("右","1");}else{setVar("右","0");}await tick();}}); }
+    },
+{
+      name: "子弹",
+      x: 0, y: 60,
+      direction: 90,
+      size: 100,
+      visible: false,
+      rotationStyle: "left-right",
+      costumes: [{name:"造型1",url:"blob:null/18cfaead-e598-445e-86b1-eca746599bcb",bitmapResolution:1,rotationCenterX:5.408227276214205,rotationCenterY:-0.9590117581571747}],
+      costumeIndex: 0,
+      scripts: function(sprite){ sprite.on('clone', async function(){sprite.direction=Number(0);
+sprite.visible=true;
+while(running&&!((isTouching(sprite,0) || isTouching(sprite,0)))){sprite.move(("15" + (Math.abs)(0)));
+if((isTouching(sprite,0) || isTouching(sprite,0))){await wait(Number("0.02"));}await tick();}});
+sprite.on('flag', async function(){sprite.visible=false;}); }
+    },
+{
+      name: "MUSIC",
+      x: -96, y: 38,
+      direction: 90,
+      size: 100,
+      visible: true,
+      rotationStyle: "all around",
+      costumes: [{name:"costume1",url:"blob:null/c4f0f376-ec6d-4e7f-a823-4a1ba909c3ed",bitmapResolution:2,rotationCenterX:0,rotationCenterY:0}],
+      costumeIndex: 0,
+      scripts: function(sprite){ sprite.on('flag', async function(){while(running){await tick();}}); }
+    },
+{
+      name: "道具包",
+      x: 164, y: -92,
+      direction: 30,
+      size: 60,
+      visible: false,
+      rotationStyle: "all around",
+      costumes: [{name:"green coin",url:"blob:null/784ae0ea-e61f-4e90-9dcf-05249e5d817f",bitmapResolution:1,rotationCenterX:30.752063293733755,rotationCenterY:30.813932098621194},{name:"green coin2",url:"blob:null/7196458e-c529-4d09-bca1-94e75b35542e",bitmapResolution:1,rotationCenterX:30.107073507728018,rotationCenterY:30.16895350772765},{name:"green coin end",url:"blob:null/b8d46a63-710d-44bd-997e-4d2317b3e8a4",bitmapResolution:1,rotationCenterX:20.475357696663167,rotationCenterY:20.53723769666297},{name:"流星锤",url:"blob:null/42072cb3-45d3-4831-b980-1dae342954c4",bitmapResolution:1,rotationCenterX:30.254852127173706,rotationCenterY:31.0048702299718},{name:"spring",url:"blob:null/3e18be98-8872-45b1-9746-5c399d620423",bitmapResolution:1,rotationCenterX:21.496395000000035,rotationCenterY:19.472635000000025},{name:"spring2",url:"blob:null/e50dc9d4-7634-4c22-bdd4-a1a6eecd6362",bitmapResolution:1,rotationCenterX:33.85649641177298,rotationCenterY:12.872615000000025},{name:"fspring",url:"blob:null/b47f57db-cc54-47e3-982a-da16139211a9",bitmapResolution:1,rotationCenterX:36.750185252609384,rotationCenterY:19.472634999999997},{name:"fspring2",url:"blob:null/de24e14e-5b88-4e46-84c5-f4ae216af961",bitmapResolution:1,rotationCenterX:55.750185000000016,rotationCenterY:12.872615000000025},{name:"spikeBallHor",url:"blob:null/7a4cc945-bebe-4888-aae6-9c0265a58440",bitmapResolution:1,rotationCenterX:30.254854643175776,rotationCenterY:31.00487394181735},{name:"spikeBallVer",url:"blob:null/99cfd950-8837-4084-97a7-88b05f8cee50",bitmapResolution:1,rotationCenterX:30.254857159177845,rotationCenterY:31.004877653662902},{name:"saw",url:"blob:null/48c607eb-fa69-458d-9571-012d2e4fce28",bitmapResolution:1,rotationCenterX:33.80997337669331,rotationCenterY:34.55999840695651},{name:"sawHor",url:"blob:null/bee47668-003a-4ee1-b965-7ecb2db8d55c",bitmapResolution:1,rotationCenterX:33.8099751194533,rotationCenterY:34.559992086256756},{name:"sawVer",url:"blob:null/8223275f-f6b7-4af3-a5eb-eb0688c8d59b",bitmapResolution:1,rotationCenterX:33.80996686221329,rotationCenterY:34.559995765557005},{name:"fireball",url:"blob:null/a7eb7717-a87c-445b-9365-326d6c1976dd",bitmapResolution:1,rotationCenterX:16.138812142857063,rotationCenterY:16.140454833649358}],
+      costumeIndex: 3,
+      scripts: function(sprite){ sprite.on('flag', async function(){sprite.visible=false;});
+sprite.on('clone', async function(){sprite.visible=true;
+while(running&&!((isTouching(sprite,0) || (isTouching(sprite,0) || isTouching(sprite,0))))){sprite.move("3");
+if((isTouching(sprite,0) && (String(getVar("物品")).toLowerCase() === String("1").toLowerCase()))){}await tick();}
+await wait(Number("0.02"));});
+sprite.on('flag', async function(){while(running){if((String(getVar("大招")).toLowerCase() === String("1").toLowerCase())){sprite.direction=Number("-90");
+for(let _i=0;_i<Number("6");_i++){sprite.direction=(sprite.direction+Number("20"))%360;await tick();}
+await wait(Number("1"));}await tick();}}); }
+    },
+{
+      name: "boss子弹",
+      x: -226, y: -84,
+      direction: -90,
+      size: 220.00000000000003,
+      visible: false,
+      rotationStyle: "all around",
+      costumes: [{name:"造型3",url:"blob:null/f2509343-8441-4fed-9558-dc0f62ec8564",bitmapResolution:2,rotationCenterX:13,rotationCenterY:9},{name:"造型2",url:"blob:null/f2509343-8441-4fed-9558-dc0f62ec8564",bitmapResolution:2,rotationCenterX:13,rotationCenterY:9},{name:"造型4",url:"blob:null/388f39e2-6a73-4939-9397-7a848992ceb0",bitmapResolution:2,rotationCenterX:14,rotationCenterY:8},{name:"造型8",url:"blob:null/388f39e2-6a73-4939-9397-7a848992ceb0",bitmapResolution:2,rotationCenterX:14,rotationCenterY:8},{name:"造型5",url:"blob:null/bb78e07c-9227-4038-8ff0-5af7f888dc44",bitmapResolution:2,rotationCenterX:15,rotationCenterY:10},{name:"造型9",url:"blob:null/bb78e07c-9227-4038-8ff0-5af7f888dc44",bitmapResolution:2,rotationCenterX:15,rotationCenterY:10},{name:"造型6",url:"blob:null/18420c9f-c609-4a95-875e-3f9867edb8f9",bitmapResolution:2,rotationCenterX:18,rotationCenterY:8},{name:"造型10",url:"blob:null/18420c9f-c609-4a95-875e-3f9867edb8f9",bitmapResolution:2,rotationCenterX:18,rotationCenterY:8},{name:"造型7",url:"blob:null/75a4cb51-fe31-4eb6-ab8c-76ee6f32ae5f",bitmapResolution:2,rotationCenterX:18,rotationCenterY:7},{name:"造型11",url:"blob:null/75a4cb51-fe31-4eb6-ab8c-76ee6f32ae5f",bitmapResolution:2,rotationCenterX:18,rotationCenterY:7}],
+      costumeIndex: 8,
+      scripts: function(sprite){ sprite.on('flag', async function(){sprite.visible=false;});
+sprite.on('clone', async function(){sprite.visible=true;
+sprite.direction=Number(0);
+sprite.x=Number(0);sprite.y=Number((0 + "8"));
+while(running&&!((isTouching(sprite,0) || isTouching(sprite,0)))){sprite.move("10");
+sprite.costumeIndex=(sprite.costumeIndex+1)%sprite.costumes.length;
+if(isTouching(sprite,0)){await wait(Number("0.02"));}
+if((isTouching(sprite,0) && (String(getVar("物品")).toLowerCase() === String("1").toLowerCase()))){}await tick();}}); }
+    },
+{
+      name: "画笔血条",
+      x: 114, y: 180,
+      direction: 90,
+      size: 100,
+      visible: false,
+      rotationStyle: "left-right",
+      costumes: [{name:"造型1",url:"blob:null/6dc14905-8544-45a6-bd56-87cf5bde9285",bitmapResolution:1,rotationCenterX:0,rotationCenterY:0},{name:"造型2",url:"blob:null/d32b14b7-3966-47c9-bb46-20bbde9d4763",bitmapResolution:1,rotationCenterX:46,rotationCenterY:53}],
+      costumeIndex: 0,
+      scripts: function(sprite){ sprite.on('flag', async function(){sprite.visible=false;
+while(running){if((String(getVar("boss无敌")).toLowerCase() === String("0").toLowerCase())){}await tick();}});
+sprite.on('flag', async function(){while(running){if((getVar("boss血量") < "0")){running=false;return;}await tick();}}); }
+    }];
+
+function initSprites(){
+  sprites=spriteDefs.map(def=>{
+    const s=new Sprite(def);
+    if(def.scripts)def.scripts(s);
+    return s;
+  });
+  const stageDef={
+    name:'Stage',x:0,y:0,costumes:[{name:"说明",url:"blob:null/4bd5fcd4-2649-495f-8266-d7e08e5c76a5",bitmapResolution:1,rotationCenterX:251.5656754114999,rotationCenterY:188.674271122},{name:"背景1",url:"blob:null/f6a827c7-dd75-4ed0-b7a6-69f92777afe7",bitmapResolution:1,rotationCenterX:242.64916886227556,rotationCenterY:181.98894846802753},{name:"背景2",url:"blob:null/c499b1e4-169d-48e4-b62b-6c41a04fd081",bitmapResolution:1,rotationCenterX:300.66841676646663,rotationCenterY:180.40105005988005}],costumeIndex:1,
+    isStage:true,visible:true,_handlers:{},_images:{},
+    on(ev,fn){if(!this._handlers[ev])this._handlers[ev]=[];this._handlers[ev].push(fn);},
+    emit(ev){(this._handlers[ev]||[]).forEach(fn=>fn.call(this));},
+    loadImages(){}
+  };
+  const stageSprite=new Sprite(stageDef);
+  (function(sprite){ sprite.on('flag', async function(){while(!((String(getVar("关卡")).toLowerCase() === String("2").toLowerCase()))){await tick();}}); })(stageSprite);
+  stageObj=stageSprite;
+}
+
+async function gameLoop(){
+  running=true;
+  initSprites();
+  sprites.forEach(s=>s.emit('flag'));
+  if(stageObj)stageObj.emit('flag');
+  while(running){
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle='#fff';ctx.fillRect(0,0,W,H);
+    if(stageObj){
+      const img=stageObj._images[stageObj.costumeIndex];
+      if(img&&img.complete&&img.naturalWidth>0)ctx.drawImage(img,0,0,W,H);
+    }
+    sprites.forEach(s=>s.draw());
+    const vhtml=Object.entries(vars).map(([k,v])=>`<b>${k}</b>: ${v}`).join(' &nbsp; ');
+    document.getElementById('vars').innerHTML=vhtml;
+    await tick();
+  }
+}
+
+document.getElementById('startBtn').onclick=()=>{if(!running)gameLoop();};
+document.getElementById('stopBtn').onclick=()=>{running=false;ctx.clearRect(0,0,W,H);ctx.fillStyle='#fff';ctx.fillRect(0,0,W,H);};
+</script>
+</body>
+</html>
